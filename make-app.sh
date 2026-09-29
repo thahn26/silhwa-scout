@@ -32,8 +32,21 @@ cat > "$APP/Contents/Info.plist" <<PL
 PL
 if [ -f "$DIR/icon.icns" ]; then cp "$DIR/icon.icns" "$APP/Contents/Resources/icon.icns"; fi
 touch "$APP"
+
+# 윈도우처럼 Claude 없이 도는 모습을 맥에서 확인하는 미리보기 앱(데이터·포트 따로)
+PREV="$DEST/실화탐사대 윈도우 미리보기.app"
+rm -rf "$PREV"
+cp -R "$APP" "$PREV"
+cat > "$PREV/Contents/MacOS/launcher" <<'L'
+#!/bin/bash
+export SS_PORT=8767 SS_NO_CLAUDE=1 SS_DATA="$HOME/Library/Application Support/SilhwaScout-preview"
+exec "$(cd "$(dirname "$0")/../Resources" && pwd)/launch.sh"
+L
+chmod +x "$PREV/Contents/MacOS/launcher"
+sed -i '' 's/<string>실화탐사대<\/string>/<string>실화탐사대 윈도우 미리보기<\/string>/g; s/local.silhwa.scout/local.silhwa.scout.preview/' "$PREV/Contents/Info.plist"
+touch "$PREV"
 # 이전 버전 서버가 떠 있으면 끈다(다음에 열 때 새 버전으로 켜진다)
 # (한글 경로는 macOS가 자모를 풀어 저장해서 이름으로 찾기 어렵다 — 포트로 찾는다)
-PIDS="$(lsof -ti tcp:${SS_PORT:-8766} -sTCP:LISTEN 2>/dev/null || true)"
+PIDS="$(lsof -ti tcp:8766 -ti tcp:8767 -sTCP:LISTEN 2>/dev/null || true)"
 if [ -n "$PIDS" ]; then kill $PIDS 2>/dev/null || true; sleep 0.5; fi
 echo "만들었습니다: $APP"

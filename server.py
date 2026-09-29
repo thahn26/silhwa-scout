@@ -183,6 +183,118 @@ def looks_like_news(p):
     return bool(NEWS_TITLE.search(p["title"])) or "기사" in (p.get("category") or "") or "뉴스" in (p.get("category") or "")
 
 
+# ── 규칙 필터(Claude 없이) ────────────────────────────────
+# Claude가 없는 PC(윈도우 등)에서도 PD 지시 규칙대로 걸러 내도록, 표현 규칙으로 글쓴이·제외·분류·점수를 매긴다.
+# Claude 채점(ai)이 있으면 화면은 그쪽을 쓰고, 없을 때만 이 결과(rule)를 쓴다.
+R_FAMILY = re.compile(r"(저희|우리|제|내)\s?(아버지|어머니|엄마|아빠|부모님|남편|아내|와이프|신랑|딸|아들|아이|애기|아기|동생|언니|오빠|누나|형|"
+                      r"할머니|할아버지|가족|강아지|고양이|반려견|반려묘)")
+R_FIRST = re.compile(r"도와주세요|도와주십시오|억울합니다|억울해요|피해자입니다|피해를 입었|제보합니다|공론화 부탁|공론화합니다|널리 알려|"
+                     r"퍼트려|퍼뜨려|당했습니다|당했어요|당했는데|사기를 당|사기당|제가 겪은|저희 집|제 차|제 가게|피해견주|피해자 본인|"
+                     r"조언 부탁|어떻게 해야|신고했는데|신고했지만")
+R_NEWS_BODY = re.compile(r"기자\s*=|기자\]|[\w.]+@[\w.]+\.(co\.kr|com)|무단\s?전재|재배포\s?금지|저작권자|Copyright|뉴시스|연합뉴스|뉴스1|"
+                         r"n\.news\.naver\.com|v\.daum\.net")
+R_ARREST = re.compile(r"구속|체포|검거|송치|기소|징역|실형|선고|입건|영장|구형|재판에 넘겨|검찰에 넘겨")
+R_POLICE_FAIL = re.compile(r"수사\s?(를\s?)?(안|않|거부|미흡|부실)|무혐의|불송치|은폐|조작|봐주기|부실\s?수사|솜방망이|종결|각하|"
+                           r"경찰이\s?(안|무시|방관)|신고했는데|신고했지만")
+R_EVIDENCE = re.compile(r"CCTV|cctv|블박|블랙박스|녹취|녹음|영상|사진|캡처|캡쳐|증거|판결문|문자|카톡|진단서|계약서|영수증")
+R_CATS = [
+    ("사기·금전피해", r"사기|먹튀|미환불|환불|보이스피싱|피싱|전세|보증금|리딩방|코인|투자|횡령|잠적|떼먹|돈을 안|대금|선결제"),
+    ("실종·미스터리", r"실종|행방불명|찾습니다|찾아주세요|미스터리|미스테리|기이|귀신|괴담|소름|정체불명"),
+    ("폭력·학대", r"폭행|학대|폭력|맞았|때려|때렸|성폭|성추행|스토킹|스토커|협박|흉기|괴롭힘|학폭|학교폭력|개물림|물렸|교제폭력"),
+    ("가족·이웃갈등", r"층간소음|윗집|아랫집|이웃|시댁|시어머니|시아버지|장모|처가|며느리|사위|이혼|불륜|외도|상간|양육비|상속|유산|친가|형제|쓰레기"),
+    ("갑질·직장", r"갑질|직장|상사|사장님|알바|임금|월급|체불|해고|부당|노동|근로|퇴사|입사|회사에서"),
+    ("교통·안전사고", r"사고|블박|블랙박스|교통|음주운전|뺑소니|화재|추락|붕괴|안전|과실|보험사|차량"),
+    ("범죄·수사", r"경찰|수사|범죄|절도|도둑|훔쳐|훔친|불법촬영|몰카|마약|도박|조폭|고소|신고"),
+    ("사회고발·제도", r"민원|구청|시청|공무원|주민센터|제도|의료사고|병원|요양원|어린이집|유치원|학원|학교|관리사무소|공기업"),
+]
+R_CATS = [(c, re.compile(x)) for c, x in R_CATS]
+R_FLAGS = [
+    ("연예", re.compile(r"아이돌|연예인|배우|가수|유튜버|스트리머|방송인|컴백|드라마|예능|BJ|앨범|팬미팅|열애")),
+    ("정치", re.compile(r"대통령|민주당|국민의힘|여당|야당|국회|의원|선거|대선|총선|탄핵|정부|장관|李|尹|좌파|우파|빨갱이|2찍|선관위|매국")),
+    ("해외", re.compile(r"美|中|日|英|미국|중국|일본|러시아|우크라|해외|외신|트럼프|북한")),
+    ("유머", re.compile(r"\.jpg|\.gif|\.mp4|jpg$|gif$|ㅋㅋㅋ|웃긴|짤|유머|레전드|근황|manhwa|만화|게임|축구|야구|핫딜|할인|광고|협찬|공구")),
+]
+
+
+def rule_classify(p):
+    """제목·요약·본문 앞부분으로 글쓴이·제외 사유·분류·점수를 매긴다(0~100)."""
+    title = p.get("title") or ""
+    text = " ".join(x for x in (title, p.get("excerpt") or "", p.get("bodySnippet") or "") if x)
+    group = source_meta(p["source"])[1]
+    family, first = R_FAMILY.search(text), R_FIRST.search(text)
+    if group == "뉴스·청원":
+        writer = "언론보도"
+    elif first and family:
+        writer = "가족·지인"
+    elif first:
+        writer = "당사자"
+    elif p.get("newsLike") or len(R_NEWS_BODY.findall(p.get("bodySnippet") or "")) >= 2:
+        writer = "뉴스퍼옴"
+    else:
+        writer = "제3자"
+    excluded = ""
+    if writer == "뉴스퍼옴":
+        excluded = "뉴스퍼옴"
+    elif R_ARREST.search(title + " " + (p.get("excerpt") or "")) and not R_POLICE_FAIL.search(text):
+        excluded = "구속·수사중"
+    counts = [(len(rx.findall(text)), c) for c, rx in R_CATS]
+    n, category = max(counts)
+    category = category if n else "해당없음"
+    flags = [f for f, rx in R_FLAGS if rx.search(title if f == "유머" else text)]
+    evidence = R_EVIDENCE.findall(text)
+    e = p.get("engagement") or 0
+    score = 10 + e * 25
+    score += 25 if category != "해당없음" else 0
+    score += 25 if writer in ("당사자", "가족·지인") else 0
+    score += 8 if evidence else 0
+    score += min(10, 3 * max(0, n - 1))  # 사건 표현이 여러 번 나오면 조금 더
+    score -= 20 * len(flags)
+    if writer == "언론보도":
+        score -= 15  # PD 지시: 피해자·가족이 직접 쓴 글을 우선한다(기사는 참고용)
+    if excluded:
+        score = min(score, 10)
+    reason = [{"당사자": "피해자 본인 글", "가족·지인": "가족·지인 글", "언론보도": "언론 기사", "뉴스퍼옴": "뉴스 퍼온 글"}.get(writer, "")]
+    if category != "해당없음":
+        reason.append(category)
+    if evidence:
+        reason.append("증거 언급(" + ", ".join(sorted(set(evidence))[:2]) + ")")
+    if flags:
+        reason.append("·".join(flags) + " 성격")
+    if excluded == "구속·수사중":
+        reason.append("이미 구속·수사 단계")
+    p["rule"] = {"score": int(max(0, min(100, round(score)))), "category": category, "writer": writer,
+                 "excluded": excluded, "flags": flags, "reason": " · ".join(r for r in reason if r)}
+
+
+def rule_body_pass(limit=40):
+    """Claude가 없을 때: 규칙 점수가 높은 글은 본문 앞부분까지 읽고 다시 판단한다."""
+    with lock:
+        cutoff = time.time() - 2 * 86400
+        pool = [p for p in posts.values() if not p.get("ai") and not p.get("bodySnippet") and p["source"] in sources.BY_ID
+                and p.get("lastSeen", 0) >= cutoff and not (p.get("rule") or {}).get("excluded")
+                and source_meta(p["source"])[1] != "뉴스·청원"]  # 기사는 글쓴이를 가릴 필요가 없다
+        pool.sort(key=lambda p: (p.get("rule") or {}).get("score", 0), reverse=True)
+        picked, cnt = [], {}
+        for p in pool:  # 한 커뮤니티가 몫을 독차지하지 않게 곳마다 4개까지
+            if len(picked) >= limit:
+                break
+            if cnt.get(p["source"], 0) < 4:
+                picked.append(p)
+                cnt[p["source"]] = cnt.get(p["source"], 0) + 1
+        pool = picked
+
+    def grab(p):
+        try:
+            p["bodySnippet"] = sources.fetch_body(p["source"], p["url"], limit=800)
+        except Exception:  # noqa: BLE001
+            p["bodySnippet"] = ""
+        rule_classify(p)
+    with ThreadPoolExecutor(max_workers=6) as ex:
+        list(ex.map(grab, pool))
+    if pool:
+        save_posts()
+
+
 def prescore(batch):
     """같은 커뮤니티 안에서 반응(조회·추천·댓글) 백분위 + 키워드 점수."""
     by_src = {}
@@ -207,6 +319,7 @@ def prescore(batch):
             p["keywords"] = hits
             p["newsLike"] = news
             p["pre"] = int(max(0, min(100, round(10 + e * 40 + ks - (25 if news else 0)))))
+            rule_classify(p)
 
 
 # ── 수집 ────────────────────────────────────────────────────
@@ -240,6 +353,7 @@ def crawl_job():
                     old["lastSeen"] = now
                     old["peakRank"] = min(old.get("peakRank") or 999, it.get("rank") or 999)
                     old["seenCount"] = old.get("seenCount", 1) + 1
+                    rule_classify(old)
                 else:
                     it.update(id=pid, firstSeen=now, lastSeen=now, peakRank=it.get("rank"), seenCount=1)
                     posts[pid] = it
@@ -259,6 +373,12 @@ def crawl_job():
         return
     if config.get("autoScore") and claude_ready():
         start_job("score", score_job, None)
+    else:
+        set_job("crawl", progress="")
+        try:
+            rule_body_pass()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 # ── Claude ─────────────────────────────────────────────────
@@ -311,6 +431,8 @@ _status_cache = {"at": 0, "value": None}
 
 
 def claude_status(force=False):
+    if os.environ.get("SS_NO_CLAUDE"):  # 맥에서 '윈도우(Claude 없음) 미리보기'로 켤 때
+        return {"found": False, "loggedIn": False, "preview": True}
     if not force and _status_cache["value"] and time.time() - _status_cache["at"] < 300:
         return _status_cache["value"]
     exe = find_claude()
@@ -452,7 +574,7 @@ def score_job(ids=None):
             else:
                 cutoff = time.time() - 3 * 86400
                 pool = [p for p in posts.values() if (p.get("ai") or {}).get("v") != AI_VERSION
-                        and not p.get("web") and p.get("lastSeen", 0) >= cutoff]
+                        and not (p.get("web") and p.get("ai")) and p.get("lastSeen", 0) >= cutoff]
                 cands = pick_candidates(pool, int(config.get("aiTopN") or 40))
         if not cands:
             set_job("score", running=False, finishedAt=time.time(), message="채점할 새 후보가 없습니다", progress="")
@@ -467,6 +589,7 @@ def score_job(ids=None):
                         p["bodySnippet"] = sources.fetch_body(p["source"], p["url"], limit=800)
                     except Exception:  # noqa: BLE001
                         p["bodySnippet"] = ""
+                    rule_classify(p)
                 done[0] += 1
                 set_job("score", progress=f"본문 읽는 중 ({done[0]}/{len(cands)})")
             with ThreadPoolExecutor(max_workers=6) as ex:
@@ -710,6 +833,41 @@ class Handler(SimpleHTTPRequestHandler):
             if not claude_ready():
                 return self._json(400, {"error": "Claude에 로그인되어 있지 않습니다"})
             return self._json(200, {"started": start_job("web", web_job, str(body.get("query") or "").strip())})
+        if path == "/api/import":
+            # Claude가 브라우저로 스레드 등을 둘러보고 찾은 글을 넣는 입구. 넣은 글은 바로 AI 채점한다.
+            now, added, ids = time.time(), 0, []
+            batch = []
+            for r in (body.get("items") or [])[:100]:
+                url = str(r.get("url") or "").strip()
+                title = re.sub(r"\s+", " ", str(r.get("title") or r.get("text") or "")).strip()[:120]
+                if not url.startswith("http") or not title:
+                    continue
+                src = r.get("source") if r.get("source") in sources.WEB_SOURCES else "threads"
+                text = str(r.get("text") or "").strip()
+                it = {"source": src, "title": title, "url": url, "excerpt": text[:200], "bodySnippet": text[:800],
+                      "views": sources.num(r.get("views")), "likes": sources.num(r.get("likes")),
+                      "comments": sources.num(r.get("comments")), "timeText": str(r.get("timeText") or ""),
+                      "ts": r.get("ts") or sources.parse_time(str(r.get("timeText") or "")),
+                      "category": str(r.get("author") or ""), "rank": None, "web": True,
+                      "query": str(r.get("query") or "")}
+                batch.append(it)
+            prescore(batch)
+            with lock:
+                for it in batch:
+                    pid = post_id(it["url"])
+                    old = posts.get(pid)
+                    if old:
+                        old.update({k: v for k, v in it.items() if v not in (None, "")}, lastSeen=now)
+                    else:
+                        it.update(id=pid, firstSeen=now, lastSeen=now, seenCount=1)
+                        posts[pid] = it
+                        added += 1
+                    ids.append(pid)
+            save_posts()
+            todo = [i for i in ids if (posts[i].get("ai") or {}).get("v") != AI_VERSION]
+            started = bool(todo) and claude_ready() and start_job("score", score_job, todo)
+            return self._json(200, {"received": len(batch), "added": added, "scoring": started,
+                                    "note": "" if started or not todo else "채점이 이미 진행 중이거나 Claude 연결 전이라 다음 채점 때 처리됩니다"})
         if path == "/api/save":
             pid = body.get("id")
             with lock:

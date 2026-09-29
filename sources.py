@@ -36,13 +36,15 @@ def _ssl_context():
 
 SSL_CTX = _ssl_context()
 
-def fetch(url, timeout=15, referer=None):
-    req = urllib.request.Request(url, headers={
+def fetch(url, timeout=15, referer=None, extra_headers=None):
+    headers = {
         "User-Agent": UA,
         "Accept": "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8",
         "Accept-Language": "ko-KR,ko;q=0.9,en;q=0.5",
         "Referer": referer or url,
-    })
+    }
+    headers.update(extra_headers or {})
+    req = urllib.request.Request(url, headers=headers)
     with urllib.request.urlopen(req, timeout=timeout, context=SSL_CTX) as r:
         raw = r.read(6 * 1024 * 1024)
         ctype = r.headers.get("Content-Type", "")
@@ -399,6 +401,63 @@ def _parse_naver(src, top):
     return parse
 
 
+# 스레드: 로그인 없이 검색 페이지를 열면 결과가 페이지 안 JSON으로 들어 있다(브라우저로 처음 여는 것처럼 요청해야 함).
+THREADS_HEADERS = {"Sec-Fetch-Dest": "document", "Sec-Fetch-Mode": "navigate", "Sec-Fetch-Site": "none",
+                   "Upgrade-Insecure-Requests": "1", "Referer": ""}
+# 피해자가 직접 쓸 법한 표현은 매번, 주제어는 시간마다 3개씩 돌아가며 검색한다
+THREADS_CORE = ["도와주세요", "공론화", "억울합니다", "사기 피해", "실종", "피해자입니다", "널리 알려주세요", "제보합니다"]
+THREADS_TOPICS = ["층간소음", "학교폭력", "갑질", "스토킹", "보이스피싱", "전세사기", "동물학대", "요양원", "의료사고",
+                  "폭행 당했", "먹튀", "경찰 신고", "블랙박스", "이웃 갈등", "어린이집"]
+THREADS_DAYS = 14  # 이보다 오래된 글은 뺀다
+
+
+def threads_urls():
+    h = int(time.time() // 3600)
+    topics = [THREADS_TOPICS[(h * 3 + i) % len(THREADS_TOPICS)] for i in range(3)]
+    return ["https://www.threads.com/search?serp_type=default&q=" + urllib.parse.quote(k) for k in THREADS_CORE + topics]
+
+
+def parse_threads(html, base):
+    import json
+    found = []
+
+    def walk(o):
+        if isinstance(o, dict):
+            if "code" in o and "caption" in o and isinstance(o.get("user"), dict):
+                found.append(o)
+            for v in o.values():
+                walk(v)
+        elif isinstance(o, list):
+            for v in o:
+                walk(v)
+    for blob in re.findall(r'<script type="application/json"[^>]*>(.*?)</script>', html, re.S):
+        if '"caption"' in blob and '"code":"' in blob:
+            try:
+                walk(json.loads(blob))
+            except ValueError:
+                pass
+    out, seen = [], set()
+    cutoff = time.time() - THREADS_DAYS * 86400
+    q = urllib.parse.parse_qs(urllib.parse.urlparse(base).query).get("q", [""])[0]
+    for p in found:
+        code, user = p.get("code"), (p.get("user") or {}).get("username")
+        text = ((p.get("caption") or {}).get("text") or "").strip()
+        if not code or not user or code in seen or not text or (p.get("taken_at") or 0) < cutoff:
+            continue
+        seen.add(code)
+        info = p.get("text_post_app_info") or {}
+        lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+        first = lines[0] if lines else text
+        if len(first) < 20 and len(lines) > 1:  # '도와주세요.🚨'처럼 첫 줄이 짧으면 다음 줄까지 제목으로
+            first = first + " " + lines[1]
+        out.append(item("threads", first[:90], f"https://www.threads.com/@{user}/post/{code}",
+                        excerpt=text[:200], body=text[:3000], bodySnippet=text[:800],
+                        likes=p.get("like_count"), comments=info.get("direct_reply_count"),
+                        ts=float(p["taken_at"]), timeText=time.strftime("%Y-%m-%d %H:%M", time.localtime(p["taken_at"])),
+                        category="@" + user, query=q))
+    return out
+
+
 # ── 수집 대상 목록 ──────────────────────────────────────────
 # group: 화면의 커뮤니티 묶음. urls 여러 개면 모두 읽고 주소로 중복을 뺀다.
 
@@ -433,6 +492,8 @@ SOURCES = [
      "urls": ["https://www.bobaedream.co.kr/list?code=humor"], "parse": _parse_bobae("bobaehumor")},
     {"id": "blind", "name": "블라인드", "group": "사고·피해",
      "urls": ["https://www.teamblind.com/kr/topics/%ED%86%A0%ED%94%BD-%EB%B2%A0%EC%8A%A4%ED%8A%B8"], "parse": parse_blind},
+    {"id": "threads", "name": "스레드", "group": "스레드", "urls_fn": threads_urls, "urls": ["https://www.threads.com/search"],
+     "parse": parse_threads, "headers": THREADS_HEADERS, "delay": 1.5},
     {"id": "naverview", "name": "네이버 많이 본 뉴스", "group": "뉴스·청원",
      "urls": ["https://news.naver.com/main/ranking/popularDay.naver"], "parse": _parse_naver("naverview", 2)},
     {"id": "navercmt", "name": "네이버 댓글 많은 뉴스", "group": "뉴스·청원",
@@ -441,7 +502,7 @@ SOURCES = [
 
 # 직접 못 읽는 곳(로그인·봇 차단). Claude 웹검색으로 찾아 온 글에 붙는 출처 이름.
 WEB_SOURCES = {
-    "threads": ("스레드", "웹검색"),
+    "threads": ("스레드", "스레드"),
     "petition": ("국민동의청원", "뉴스·청원"),
     "instiz": ("인스티즈", "사연·폭로"),
     "ppomppu": ("뽐뿌", "남초·이슈"),
@@ -454,9 +515,9 @@ BY_ID = {s["id"]: s for s in SOURCES}
 def crawl_source(src):
     """한 커뮤니티를 읽어 (글 목록, 오류) 를 돌려준다."""
     items, seen, errors = [], set(), []
-    for url in src["urls"]:
+    for url in (src["urls_fn"]() if src.get("urls_fn") else src["urls"]):
         try:
-            html = fetch(url)
+            html = fetch(url, extra_headers=src.get("headers"))
             for it in src["parse"](html, url):
                 key = re.sub(r"\W", "", it["title"]) if it else ""
                 if it and it["url"] not in seen and key not in seen:
@@ -464,7 +525,7 @@ def crawl_source(src):
                     items.append(it)
         except Exception as e:  # noqa: BLE001
             errors.append(f"{url}: {type(e).__name__} {e}"[:300])
-        time.sleep(0.3)
+        time.sleep(src.get("delay", 0.3))
     for i, it in enumerate(items):
         if it["rank"] is None:
             it["rank"] = i + 1

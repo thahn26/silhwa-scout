@@ -3,8 +3,8 @@
 
 const $ = (s, el = document) => el.querySelector(s);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-const GROUPS = ["사연·폭로", "남초·이슈", "사고·피해", "뉴스·청원", "웹검색"];
-const GROUP_COLOR = { "사연·폭로": "var(--g1)", "남초·이슈": "var(--g2)", "사고·피해": "var(--g3)", "뉴스·청원": "var(--g4)", "웹검색": "var(--g5)" };
+const GROUPS = ["사연·폭로", "남초·이슈", "사고·피해", "스레드", "뉴스·청원", "웹검색"];
+const GROUP_COLOR = { "사연·폭로": "var(--g1)", "남초·이슈": "var(--g2)", "사고·피해": "var(--g3)", "뉴스·청원": "var(--g4)", "스레드": "var(--ink)", "웹검색": "var(--g5)" };
 const STATUSES = ["검토중", "취재후보", "보류", "탈락"];
 const PAGE = 60;
 
@@ -81,7 +81,9 @@ const srcInfo = (id) => {
   const w = S.webSources[id];
   return w ? { id, name: w.name, group: w.group } : { id, name: id, group: "웹검색" };
 };
-const eff = (p) => (p.ai ? p.ai.score : p.pre ?? 0);
+// 판단 결과: Claude 채점(ai)이 있으면 그것, 없으면 Claude 없이 규칙으로 매긴 자동 판단(rule)
+const judge = (p) => (p.ai && p.ai.v ? p.ai : p.rule || p.ai || null);
+const eff = (p) => (judge(p) ? judge(p).score : p.pre ?? 0);
 const when = (p) => p.ts || p.firstSeen || 0;
 const isSaved = (id) => !!S.saved[id];
 
@@ -98,15 +100,15 @@ function ago(t) {
 const fmt = (n) => (n == null ? null : n >= 10000 ? (n / 10000).toFixed(n >= 100000 ? 0 : 1) + "만" : n.toLocaleString());
 
 function scoreClass(p) {
-  if (!p.ai) return "s-pre";
-  const s = p.ai.score;
+  if (!judge(p)) return "s-pre";
+  const s = judge(p).score;
   return s >= 80 ? "s-hot" : s >= 60 ? "s-good" : s >= 40 ? "s-mid" : "s-low";
 }
 
 const HIDE_FLAGS = ["연예", "정치", "유머", "해외"];
 const FIRST_HAND = ["당사자", "가족·지인"];
 // PD 지시로 빼는 글: AI가 '뉴스퍼옴'·'구속·수사중'으로 판정했거나, 아직 채점 전인데 제목이 뉴스 퍼온 글로 보이는 것
-const excludedWhy = (p) => (p.ai && p.ai.v ? p.ai.excluded : "") || (!p.ai && p.newsLike ? "뉴스퍼옴" : "") || (p.ai && !p.ai.v && p.newsLike ? "뉴스퍼옴" : "");
+const excludedWhy = (p) => (judge(p) ? judge(p).excluded || "" : "") || (!judge(p) && p.newsLike ? "뉴스퍼옴" : "");
 
 function filtered() {
   const now = Date.now() / 1000;
@@ -116,13 +118,13 @@ function filtered() {
     if (UI.hideGroups.includes(g) || UI.hideSrc.includes(p.source)) return false;
     if (UI.range && now - Math.max(when(p), p.lastSeen || 0) > UI.range * 3600) return false;
     if (!UI.showExcluded && excludedWhy(p)) return false;
-    if (UI.onlyFirst && !FIRST_HAND.includes(p.ai?.writer)) return false;
+    if (UI.onlyFirst && !FIRST_HAND.includes(judge(p)?.writer)) return false;
     if (eff(p) < UI.min) return false;
     if (UI.cats.length) {
-      const c = p.ai ? p.ai.category : "미채점";
+      const c = judge(p) ? judge(p).category : "미채점";
       if (!UI.cats.includes(c)) return false;
     }
-    if (UI.hideFlags && p.ai && (p.ai.flags || []).some((f) => HIDE_FLAGS.includes(f)) && p.ai.score < 60) return false;
+    if (UI.hideFlags && judge(p) && (judge(p).flags || []).some((f) => HIDE_FLAGS.includes(f)) && judge(p).score < 60) return false;
     if (q && !(p.title + " " + (p.excerpt || "") + " " + (p.ai?.reason || "") + " " + (p.ai?.angle || "")).toLowerCase().includes(q)) return false;
     return true;
   });
@@ -209,7 +211,7 @@ function renderTop() {
   banner.hidden = !S.claude || cl.loggedIn || hidden;
   if (!banner.hidden) {
     banner.innerHTML = cl.found === false
-      ? `<span class="t"><b>AI 채점을 쓰려면 Claude 연결이 필요합니다.</b> 이 PC에서 Claude Code를 찾지 못했어요. 수집·찜·메모는 지금도 됩니다.</span>
+      ? `<span class="t"><b>지금은 자동 필터로 걸러 보여 드립니다.</b> 피해자 글·뉴스 퍼온 글·구속 사건을 규칙으로 가려요. Claude를 연결하면 AI 채점·심층 분석·보고서도 쓸 수 있습니다.</span>
          <button class="btn red sm" id="cbHelp">연결 방법 보기</button><button class="btn sm" id="cbRecheck">다시 확인</button><button class="btn ghost sm" id="cbClose">닫기</button>`
       : `<span class="t"><b>Claude 로그인이 필요합니다.</b> Claude Code는 찾았어요. Claude Pro/Max 요금제 계정으로 로그인하면 AI 채점을 쓸 수 있습니다.</span>
          <button class="btn red sm" id="cbLogin">로그인하기</button><button class="btn sm" id="cbRecheck">다시 확인</button><button class="btn ghost sm" id="cbClose">닫기</button>`;
@@ -263,7 +265,7 @@ function renderSide() {
     <h4>기간</h4>
     <div class="seg" data-k="range">${[[6, "6시간"], [24, "24시간"], [72, "3일"], [168, "7일"]].map(([v, l]) => `<button data-v="${v}" class="${UI.range == v ? "on" : ""}">${l}</button>`).join("")}</div>
     <h4>정렬</h4>
-    <div class="seg" data-k="sort">${[["ai", "AI 점수"], ["pre", "예비"], ["hot", "반응"], ["new", "최신"]].map(([v, l]) => `<button data-v="${v}" class="${UI.sort == v ? "on" : ""}">${l}</button>`).join("")}</div>
+    <div class="seg" data-k="sort">${[["ai", "점수"], ["pre", "예비"], ["hot", "반응"], ["new", "최신"]].map(([v, l]) => `<button data-v="${v}" class="${UI.sort == v ? "on" : ""}">${l}</button>`).join("")}</div>
     <h4>최소 점수 <span>${UI.min}</span></h4>
     <input type="range" id="min" min="0" max="90" step="5" value="${UI.min}">
     <label class="toggle"><input type="checkbox" id="onlyFirst" ${UI.onlyFirst ? "checked" : ""}> 피해자·가족이 쓴 글만</label>
@@ -291,9 +293,17 @@ function reactions(p) {
 }
 
 function scoreBox(p) {
-  return p.ai
-    ? `<div class="score ${scoreClass(p)}" title="${p.ai.v ? "AI 채점" : "예전 기준 AI 채점 — 다음 채점 때 새 기준으로 다시 매깁니다"}">${p.ai.score}<small>${p.ai.v ? "AI" : "AI·구"}</small></div>`
-    : `<div class="score s-pre" title="키워드·반응으로 매긴 예비 점수 (AI 채점 전)">${p.pre ?? 0}<small>예비</small></div>`;
+  if (p.ai && p.ai.v) return `<div class="score ${scoreClass(p)}" title="Claude AI 채점">${p.ai.score}<small>AI</small></div>`;
+  if (p.rule) return `<div class="score ${scoreClass(p)} s-rule" title="Claude 없이 규칙(피해자 표현·사건 분류·반응)으로 매긴 자동 점수">${p.rule.score}<small>자동</small></div>`;
+  if (p.ai) return `<div class="score ${scoreClass(p)}" title="예전 기준 AI 채점">${p.ai.score}<small>AI·구</small></div>`;
+  return `<div class="score s-pre" title="키워드·반응으로 매긴 예비 점수">${p.pre ?? 0}<small>예비</small></div>`;
+}
+
+// 카드 아래 판단 설명 한두 줄
+function judgeLines(p) {
+  if (p.ai && p.ai.v) return `<div class="ai">${p.ai.reason ? `<span class="r">${esc(p.ai.reason)}</span>` : ""}${p.ai.angle ? `<span class="a">${esc(p.ai.angle)}</span>` : ""}</div>`;
+  if (p.rule && p.rule.reason) return `<div class="ai"><span class="r2">${esc(p.rule.reason)}</span></div>`;
+  return "";
 }
 
 function metaLine(p) {
@@ -301,10 +311,10 @@ function metaLine(p) {
   const now = Date.now() / 1000;
   const isNew = p.firstSeen && now - p.firstSeen < 3 * 3600 && (p.seenCount || 1) <= 1;
   return `<span class="srcchip"><i class="gdot" style="background:${GROUP_COLOR[s.group] || "var(--ink-3)"}"></i>${esc(s.name)}</span>
-    ${FIRST_HAND.includes(p.ai?.writer) ? `<span class="writer">${p.ai.writer === "당사자" ? "피해자 본인 글" : "가족·지인 글"}</span>` : ""}
+    ${FIRST_HAND.includes(judge(p)?.writer) ? `<span class="writer">${judge(p).writer === "당사자" ? "피해자 본인 글" : "가족·지인 글"}</span>` : ""}
     ${excludedWhy(p) ? `<span class="excl">제외: ${esc(excludedWhy(p) === "뉴스퍼옴" ? "뉴스 퍼온 글" : "구속·수사 중")}</span>` : ""}
-    ${p.ai && p.ai.category && p.ai.category !== "해당없음" ? `<span class="cat">${esc(p.ai.category)}</span>` : ""}
-    ${(p.ai?.flags || []).map((f) => `<span class="flag">${esc(f)}</span>`).join("")}
+    ${judge(p) && judge(p).category && judge(p).category !== "해당없음" ? `<span class="cat">${esc(judge(p).category)}</span>` : ""}
+    ${(judge(p)?.flags || []).map((f) => `<span class="flag">${esc(f)}</span>`).join("")}
     ${isNew ? `<span class="new">NEW</span>` : ""}
     <span>${esc(ago(when(p)))}</span>
     <span class="nums">${esc(reactions(p))}</span>
@@ -313,7 +323,7 @@ function metaLine(p) {
 
 function card(p) {
   const ex = p.excerpt && p.excerpt !== p.title ? `<div class="excerpt">${esc(p.excerpt)}</div>` : "";
-  const ai = p.ai ? `<div class="ai">${p.ai.reason ? `<span class="r">${esc(p.ai.reason)}</span>` : ""}${p.ai.angle ? `<span class="a">${esc(p.ai.angle)}</span>` : ""}</div>` : "";
+  const ai = judgeLines(p);
   const sim = p.similar?.length
     ? `<div class="similar">같은 이야기 ${p.similar.length}곳 더: ${p.similar.slice(0, 6).map((s) => `<a href="${esc(s.url)}" target="_blank" rel="noopener">${esc(srcInfo(s.source).name)}</a>`).join("")}</div>` : "";
   return `<article class="card" data-id="${p.id}">
@@ -374,7 +384,7 @@ function renderSaved() {
           <div>
             <div class="meta">${metaLine(p)}</div>
             <a class="title" data-open="${id}">${esc(p.title)}</a>
-            ${p.ai ? `<div class="ai">${p.ai.reason ? `<span class="r">${esc(p.ai.reason)}</span>` : ""}${p.ai.angle ? `<span class="a">${esc(p.ai.angle)}</span>` : ""}</div>` : ""}
+            ${judgeLines(p)}
             <div class="meta" style="margin-top:8px">
               <select class="statusSel st-${esc(s.status)}" data-status="${id}">${STATUSES.map((x) => `<option ${x === s.status ? "selected" : ""}>${x}</option>`).join("")}</select>
               <span>찜 ${ago(s.savedAt)}</span>
@@ -458,7 +468,7 @@ async function openDrawer(id) {
       </div>
     </header>
     <div class="body">
-      ${p.ai ? `<div class="sect"><h5>AI 1차 판단 · ${p.ai.score}점</h5><div class="ai" style="margin:0">${p.ai.reason ? `<span class="r">${esc(p.ai.reason)}</span>` : ""}${p.ai.angle ? `<span class="a">${esc(p.ai.angle)}</span>` : ""}</div></div>` : ""}
+      ${judge(p) ? `<div class="sect"><h5>${p.ai && p.ai.v ? "AI 1차 판단" : "자동 판단(Claude 없이)"} · ${judge(p).score}점</h5>${judgeLines(p).replace('class="ai"', 'class="ai" style="margin:0"')}</div>` : ""}
       ${s ? `<div class="sect"><h5>취재 메모</h5><textarea data-memo="${id}" rows="4" placeholder="메모">${esc(s.memo)}</textarea>
         <div style="margin-top:6px"><select class="statusSel" data-status="${id}">${STATUSES.map((x) => `<option ${x === s.status ? "selected" : ""}>${x}</option>`).join("")}</select></div></div>` : ""}
       <div class="sect" id="anaSect" ${p.analysis || s?.analysis ? "" : "hidden"}><h5>AI 심층 분석</h5><div class="md" id="anaBox">${md((p.analysis || s?.analysis)?.text || "")}</div></div>

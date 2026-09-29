@@ -10,6 +10,7 @@ import io
 import json
 import os
 import shutil
+import ssl
 import urllib.request
 import zipfile
 
@@ -57,9 +58,17 @@ def _save(st):
     os.replace(tmp, STATE)
 
 
+def _ssl_context():
+    """맥에서 python.org 파이썬은 인증서 묶음이 비어 있을 수 있어 시스템 인증서를 쓴다(윈도우는 기본값으로 충분)."""
+    for cafile in (os.environ.get("SSL_CERT_FILE"), "/etc/ssl/cert.pem"):
+        if cafile and os.path.exists(cafile):
+            return ssl.create_default_context(cafile=cafile)
+    return ssl.create_default_context()
+
+
 def _get(name, timeout):
     req = urllib.request.Request(BASE + name, headers={"User-Agent": "SilhwaScout-updater"})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
+    with urllib.request.urlopen(req, timeout=timeout, context=_ssl_context()) as r:
         return r.read(20 * 1024 * 1024)
 
 

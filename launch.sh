@@ -26,7 +26,7 @@ if ! alive; then
 fi
 
 if [ -d "/Applications/Google Chrome.app" ]; then
-  open -na "Google Chrome" --args --app="$URL" --user-data-dir="$SUPPORT/chrome" --no-first-run --no-default-browser-check
+  open -na "Google Chrome" --args --app="$URL" --user-data-dir="$SUPPORT/chrome${SS_NO_CLAUDE:+-preview}" --no-first-run --no-default-browser-check
 else
   open "$URL"
 fi
