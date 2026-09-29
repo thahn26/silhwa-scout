@@ -1,1 +1,91 @@
+# 윈도우 설치 파일(SilhwaScout_Setup_*.exe) 만들기.
+# main에 올릴 때마다 GitHub의 윈도우 서버에서
+#   1) 설치 없는 파이썬을 받고  2) 실제로 앱 서버를 켜서 수집까지 시험한 뒤  3) Inno Setup으로 설치 파일을 만든다.
+# 결과는 저장소의 Releases 페이지에 올라간다.
+name: 윈도우 설치 파일 만들기
 
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  PYTHON_VERSION: "3.12.10"
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 설치 없는 파이썬 받기
+        shell: pwsh
+        run: |
+          $v = $env:PYTHON_VERSION
+          Invoke-WebRequest "https://www.python.org/ftp/python/$v/python-$v-embed-amd64.zip" -OutFile py.zip
+          Expand-Archive py.zip -DestinationPath build/python
+          build/python/python.exe --version
+
+      - name: 윈도우에서 앱 서버 시험
+        shell: pwsh
+        run: |
+          $env:SS_DATA = Join-Path $env:RUNNER_TEMP "ssdata"
+          $env:SS_PORT = "8766"
+          $py = (Resolve-Path build/python/python.exe).Path
+          Start-Process -FilePath $py -ArgumentList "server.py" -WorkingDirectory (Get-Location) -NoNewWindow `
+            -RedirectStandardOutput "$env:RUNNER_TEMP/out.log" -RedirectStandardError "$env:RUNNER_TEMP/err.log"
+          $ok = $false
+          foreach ($i in 1..50) {
+            try { Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8766/api/ping -Body '{}' -ContentType 'application/json' | Out-Null; $ok = $true; break } catch { Start-Sleep -Milliseconds 200 }
+          }
+          if (-not $ok) { Get-Content "$env:RUNNER_TEMP/err.log"; throw "서버가 켜지지 않았습니다" }
+          $page = Invoke-WebRequest -Uri http://127.0.0.1:8766/ -UseBasicParsing
+          if ($page.Content -notmatch "app.js") { throw "화면 파일을 내보내지 못했습니다" }
+          Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8766/api/crawl -Body '{}' -ContentType 'application/json' | Out-Null
+          foreach ($i in 1..60) {
+            Start-Sleep -Seconds 2
+            $jobs = Invoke-RestMethod -Uri http://127.0.0.1:8766/api/jobs
+            if (-not $jobs.jobs.crawl.running) { break }
+          }
+          $state = Invoke-RestMethod -Uri http://127.0.0.1:8766/api/state
+          Write-Host "수집 결과: $($jobs.jobs.crawl.message)"
+          foreach ($s in $state.sources) { Write-Host ("  {0,-12} {1,4}건  {2}" -f $s.id, $s.count, $s.error) }
+          Write-Host "Claude: $($state.claude | ConvertTo-Json -Compress)"
+          # 해외 서버라 막히는 사이트가 있을 수 있어 수집 실패로는 멈추지 않는다. 서버·실행기 동작만 확인한다.
+          & build/python/python.exe windows/launcher.pyw --stop
+          Start-Sleep -Seconds 2
+          $stopped = $true
+          try { Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8766/api/ping -Body '{}' -ContentType 'application/json' -TimeoutSec 2 | Out-Null; $stopped = $false } catch {}
+          if (-not $stopped) { throw "실행기의 --stop으로 서버가 꺼지지 않았습니다" }
+          if (Test-Path "$env:RUNNER_TEMP/err.log") { Get-Content "$env:RUNNER_TEMP/err.log" }
+
+      - name: Inno Setup 준비
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) { choco install innosetup -y --no-progress }
+
+      - name: 설치 파일 만들기
+        shell: pwsh
+        run: |
+          $env:APP_VERSION = "1.0.${{ github.run_number }}"
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" windows\installer.iss
+          if ($LASTEXITCODE -ne 0) { throw "설치 파일 만들기 실패" }
+          Get-ChildItem dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SilhwaScout_Setup
+          path: dist/*.exe
+
+      - name: Releases에 올리기
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.${{ github.run_number }}
+          name: 실화탐사대 아이템 레이더 1.0.${{ github.run_number }}
+          body: |
+            윈도우 설치 파일입니다. 아래 SilhwaScout_Setup_*.exe 를 받아 실행하세요.
+            파란 "Windows의 PC 보호" 창이 뜨면 [추가 정보] → [실행].
+          files: dist/*.exe
