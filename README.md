@@ -49,3 +49,8 @@
 
 ## 윈도우 화면 미리보기(맥)
 `실화탐사대 윈도우 미리보기.app` — Claude를 끈 상태(포트 8767, 데이터 `SilhwaScout-preview`)로 켜서 윈도우에서 어떻게 보이는지 확인한다. make-app.sh가 함께 만든다.
+
+## SNS 로그인 수집과 윈도우 공유
+- 이 맥의 Claude 내장 브라우저에 작업용 부계정으로 스레드·인스타그램 로그인 → 예약 작업 `silhwa-sns-scout`(10·13·16·19·22시)가 최신 사연 글을 모아 `/api/import`로 넣는다.
+- 설정의 '윈도우와 공유'에 GitHub 토큰(silhwa-scout 저장소, Contents 읽기·쓰기)이 있으면 이 컴퓨터가 대표가 되어 로그인 수집 글을 `feed` 브랜치의 `feed.json`으로 올린다(10분마다 확인, 1시간마다 올림).
+- 토큰이 없는 PC(윈도우)는 1시간마다 `raw.githubusercontent.com/thahn26/silhwa-scout/feed/feed.json`을 받아 자동 필터로 판단한다.

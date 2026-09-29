@@ -3,8 +3,8 @@
 
 const $ = (s, el = document) => el.querySelector(s);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-const GROUPS = ["사연·폭로", "남초·이슈", "사고·피해", "스레드", "뉴스·청원", "웹검색"];
-const GROUP_COLOR = { "사연·폭로": "var(--g1)", "남초·이슈": "var(--g2)", "사고·피해": "var(--g3)", "뉴스·청원": "var(--g4)", "스레드": "var(--ink)", "웹검색": "var(--g5)" };
+const GROUPS = ["사연·폭로", "남초·이슈", "사고·피해", "SNS", "뉴스·청원", "웹검색"];
+const GROUP_COLOR = { "사연·폭로": "var(--g1)", "남초·이슈": "var(--g2)", "사고·피해": "var(--g3)", "뉴스·청원": "var(--g4)", "SNS": "var(--ink)", "웹검색": "var(--g5)" };
 const STATUSES = ["검토중", "취재후보", "보류", "탈락"];
 const PAGE = 60;
 
@@ -105,7 +105,7 @@ function scoreClass(p) {
   return s >= 80 ? "s-hot" : s >= 60 ? "s-good" : s >= 40 ? "s-mid" : "s-low";
 }
 
-const HIDE_FLAGS = ["연예", "정치", "유머", "해외"];
+const HIDE_FLAGS = ["연예", "정치", "유머", "해외", "광고"];
 const FIRST_HAND = ["당사자", "가족·지인"];
 // PD 지시로 빼는 글: AI가 '뉴스퍼옴'·'구속·수사중'으로 판정했거나, 아직 채점 전인데 제목이 뉴스 퍼온 글로 보이는 것
 const excludedWhy = (p) => (judge(p) ? judge(p).excluded || "" : "") || (!judge(p) && p.newsLike ? "뉴스퍼옴" : "");
@@ -269,7 +269,7 @@ function renderSide() {
     <h4>최소 점수 <span>${UI.min}</span></h4>
     <input type="range" id="min" min="0" max="90" step="5" value="${UI.min}">
     <label class="toggle"><input type="checkbox" id="onlyFirst" ${UI.onlyFirst ? "checked" : ""}> 피해자·가족이 쓴 글만</label>
-    <label class="toggle"><input type="checkbox" id="hideFlags" ${UI.hideFlags ? "checked" : ""}> 연예·정치·유머·해외 숨기기</label>
+    <label class="toggle"><input type="checkbox" id="hideFlags" ${UI.hideFlags ? "checked" : ""}> 연예·정치·유머·해외·광고 숨기기</label>
     <label class="toggle" title="뉴스를 퍼 온 글, 이미 구속·수사 중인 사건"><input type="checkbox" id="showExcluded" ${UI.showExcluded ? "checked" : ""}> 제외된 글도 보기 <span class="hint">(${excludedCount.toLocaleString()}건)</span></label>
     <h4>분류 ${UI.cats.length ? `<a id="catClear">전체</a>` : ""}</h4>
     <div class="chips">${cats.map((c) => `<button class="chip ${UI.cats.includes(c) ? "on" : ""}" data-cat="${esc(c)}">${esc(c)}</button>`).join("")}</div>
@@ -312,7 +312,7 @@ function metaLine(p) {
   const isNew = p.firstSeen && now - p.firstSeen < 3 * 3600 && (p.seenCount || 1) <= 1;
   return `<span class="srcchip"><i class="gdot" style="background:${GROUP_COLOR[s.group] || "var(--ink-3)"}"></i>${esc(s.name)}</span>
     ${FIRST_HAND.includes(judge(p)?.writer) ? `<span class="writer">${judge(p).writer === "당사자" ? "피해자 본인 글" : "가족·지인 글"}</span>` : ""}
-    ${excludedWhy(p) ? `<span class="excl">제외: ${esc(excludedWhy(p) === "뉴스퍼옴" ? "뉴스 퍼온 글" : "구속·수사 중")}</span>` : ""}
+    ${excludedWhy(p) ? `<span class="excl">제외: ${esc(excludedWhy(p) === "뉴스퍼옴" ? "뉴스 퍼온 글" : "이미 결론 난 사건")}</span>` : ""}
     ${judge(p) && judge(p).category && judge(p).category !== "해당없음" ? `<span class="cat">${esc(judge(p).category)}</span>` : ""}
     ${(judge(p)?.flags || []).map((f) => `<span class="flag">${esc(f)}</span>`).join("")}
     ${isNew ? `<span class="new">NEW</span>` : ""}
@@ -513,6 +513,14 @@ function openSettings() {
           <button class="btn sm" id="resetCriteria" style="margin-top:6px">기본값으로</button></div>
         <label class="k full">항상 적용되는 규칙 <span class="hint">— 위 채점 기준과 함께 매번 Claude에게 전달됩니다.</span></label>
         <div class="full bodytext" style="max-height:none;font-size:13px">${esc(S.filterRules || "")}</div>
+        <label class="k full">윈도우와 공유 <span class="hint">— 이 컴퓨터가 로그인해서 모은 스레드·인스타그램 글을 GitHub로 올려 다른 PC(윈도우)가 받아 가게 합니다. 대표 컴퓨터 한 대에만 넣으세요.</span></label>
+        <div class="full">
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <input type="password" id="setFeedToken" autocomplete="off" placeholder="${c.feedTokenSet ? "토큰 저장됨 — 바꾸려면 새로 붙여 넣기" : "GitHub 토큰 붙여 넣기 (github_pat_…)"}" style="flex:1;min-width:260px;padding:7px 10px;border:1px solid var(--line-2);border-radius:8px;background:var(--surface)">
+            ${c.feedTokenSet ? `<button class="btn sm" id="clearFeedToken">토큰 지우기</button>` : ""}
+          </div>
+          <div class="hint" style="margin-top:6px">${esc(feedStatus())}</div>
+        </div>
         <label class="k full">수집할 커뮤니티</label>
         <div class="full srcgrid">${S.sources.map((s) => `<label class="toggle"><input type="checkbox" data-en="${s.id}" ${dis.has(s.id) ? "" : "checked"}>${esc(s.name)}</label>`).join("")}</div>
       </div>
@@ -541,12 +549,22 @@ function openClaudeHelp() {
     </div></div>`;
 }
 
+function feedStatus() {
+  const f = S.feed || {};
+  if (f.error) return "공유 오류: " + f.error;
+  if (f.role === "producer") return f.lastPublish ? `대표 컴퓨터 — 마지막으로 올림 ${ago(f.lastPublish)} · ${f.count}건` : "대표 컴퓨터 — 아직 올린 적 없음";
+  if (f.role === "consumer") return f.lastFetch ? `받는 컴퓨터 — 마지막으로 받음 ${ago(f.lastFetch)} · ${f.count}건` : "받는 컴퓨터 — 곧 받아 옵니다";
+  return "";
+}
+
 async function saveSettings() {
+  const tok = $("#setFeedToken")?.value.trim();
   const body = {
     autoInterval: +$("#setInterval").value, autoScore: $("#setAutoScore").checked, readBody: $("#setReadBody").checked,
     aiTopN: +$("#setTopN").value || 40, model: $("#setModel").value, criteria: $("#setCriteria").value,
     disabled: [...document.querySelectorAll("[data-en]")].filter((x) => !x.checked).map((x) => x.dataset.en),
   };
+  if (tok) body.feedToken = tok;
   S.config = await api("settings", body);
   $("#modalRoot").innerHTML = "";
   toast("설정을 저장했습니다");
@@ -623,6 +641,7 @@ document.addEventListener("click", async (e) => {
     case "cancelSet": $("#modalRoot").innerHTML = ""; return;
     case "saveSet": return saveSettings();
     case "resetCriteria": $("#setCriteria").value = S.defaultCriteria; return;
+    case "clearFeedToken": S.config = await api("settings", { feedToken: "" }); toast("토큰을 지웠습니다"); openSettings(); return;
     case "closeDrawer": return closeDrawer();
     case "moreBtn": UI.limit += PAGE; renderList(); return;
     case "catClear": UI.cats = []; persist(); render(); return;

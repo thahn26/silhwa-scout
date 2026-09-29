@@ -458,12 +458,71 @@ def parse_threads(html, base):
     return out
 
 
+# 네이트판 카테고리(많이 본 톡). 목록 제목이 잘려 나오므로 titleCut 표시 → 본문을 읽을 때 원래 제목으로 바꾼다.
+PANN_CATS = {"c20013": "나 억울해요", "c20017": "개념 상실한 사람들", "c20012": "세상에 이런일이", "c20025": "결혼/시집/친정",
+             "c20023": "남편 VS 아내", "c20019": "회사생활", "c20020": "알바 경험담", "c20001": "사는얘기"}
+
+
+def parse_pann_cat(html, base):
+    out = []
+    code = re.search(r"/talk/(c\d+)", base).group(1)
+    cutoff = time.time() - 14 * 86400
+    for tr in minisoup.parse(html).select("table.talk_list tbody tr"):
+        a = tr.select_one("td.subject h2 a")
+        if not a:
+            continue
+        tds = [c for c in tr.children if not isinstance(c, str) and c.tag == "td"]
+        ch = tr.select_one("strong.channel")
+        date = tds[3].text() if len(tds) > 3 else ""
+        it = item("pann_cat", a.text(), absolute(base, a.get("href")).split("?")[0],
+                  views=num(tds[2].text()) if len(tds) > 2 else None,
+                  comments=num((tr.select_one("span.reple-num") or minisoup.Node("x")).text()),
+                  timeText=date, category=PANN_CATS.get(code, "") + (" " + ch.text() if ch else ""))
+        if it and (it["ts"] or time.time()) >= cutoff:
+            it["titleCut"] = it["title"].endswith("...")
+            out.append(it)
+    return out
+
+
+# 네이버 카페 검색(최근 1주, 최신순): 로그인해야 들어가는 맘카페 등의 공개 검색 결과(제목·앞부분)
+CAFE_CORE = ["억울합니다", "도와주세요 피해", "몇 달째", "매일 반복", "공론화"]
+CAFE_TOPICS = ["층간소음 계속", "이웃 때문에", "경찰 신고했는데", "관리사무소 해결", "사기 당했어요", "학교폭력 피해",
+               "갑질 당했", "주차 매일", "쓰레기 무단투기", "개 짖는 소리", "담배 냄새 매일", "스토킹 당하고"]
+
+
+def cafe_urls():
+    h = int(time.time() // 3600)
+    qs = CAFE_CORE + [CAFE_TOPICS[(h * 2 + i) % len(CAFE_TOPICS)] for i in range(2)]
+    return ["https://search.naver.com/search.naver?ssc=tab.cafe.all&sm=tab_opt&nso=so%3Add%2Cp%3A1w&query="
+            + urllib.parse.quote(q) for q in qs]
+
+
+def parse_navercafe(html, base):
+    out = []
+    q = urllib.parse.parse_qs(urllib.parse.urlparse(base).query).get("query", [""])[0]
+    for li in minisoup.parse(html).select("ul.lst_view li.bx"):
+        a = li.select_one("a.title_link")
+        if not a:
+            continue
+        name = li.select_one("a.name")
+        dsc = li.select_one("div.dsc_area") or li.select_one("a.dsc_link")
+        text = dsc.text() if dsc else ""
+        out.append(item("navercafe", a.text(), a.get("href").split("?")[0], excerpt=text[:200], bodySnippet=text[:800],
+                        timeText=(li.select_one("span.sub") or minisoup.Node("x")).text(),
+                        category=name.text() if name else "", query=q))
+    return out
+
+
 # ── 수집 대상 목록 ──────────────────────────────────────────
 # group: 화면의 커뮤니티 묶음. urls 여러 개면 모두 읽고 주소로 중복을 뺀다.
 
 SOURCES = [
     {"id": "pann", "name": "네이트판", "group": "사연·폭로",
      "urls": ["https://pann.nate.com/talk/ranking", "https://pann.nate.com/talk/ranking/d"], "parse": parse_pann},
+    {"id": "pann_cat", "name": "네이트판 사연", "group": "사연·폭로",
+     "urls": [f"https://pann.nate.com/talk/{c}?type=3" for c in PANN_CATS], "parse": parse_pann_cat},
+    {"id": "navercafe", "name": "네이버 카페", "group": "사연·폭로", "urls_fn": cafe_urls,
+     "urls": ["https://search.naver.com/search.naver"], "parse": parse_navercafe, "headers": THREADS_HEADERS, "delay": 1.0},
     {"id": "theqoo", "name": "더쿠", "group": "사연·폭로", "urls": ["https://theqoo.net/hot"], "parse": parse_theqoo},
     {"id": "cook82", "name": "82쿡", "group": "사연·폭로",
      "urls": ["https://www.82cook.com/entiz/enti.php?bn=15"], "parse": parse_82cook},
@@ -491,8 +550,9 @@ SOURCES = [
     {"id": "bobaehumor", "name": "보배드림 유머", "group": "남초·이슈",
      "urls": ["https://www.bobaedream.co.kr/list?code=humor"], "parse": _parse_bobae("bobaehumor")},
     {"id": "blind", "name": "블라인드", "group": "사고·피해",
-     "urls": ["https://www.teamblind.com/kr/topics/%ED%86%A0%ED%94%BD-%EB%B2%A0%EC%8A%A4%ED%8A%B8"], "parse": parse_blind},
-    {"id": "threads", "name": "스레드", "group": "스레드", "urls_fn": threads_urls, "urls": ["https://www.threads.com/search"],
+     "urls": ["https://www.teamblind.com/kr/topics/" + urllib.parse.quote(t) for t in
+              ["토픽-베스트", "결혼생활", "비밀-고민상담소", "돌싱대나무숲", "육아", "블라블라"]], "parse": parse_blind},
+    {"id": "threads", "name": "스레드", "group": "SNS", "urls_fn": threads_urls, "urls": ["https://www.threads.com/search"],
      "parse": parse_threads, "headers": THREADS_HEADERS, "delay": 1.5},
     {"id": "naverview", "name": "네이버 많이 본 뉴스", "group": "뉴스·청원",
      "urls": ["https://news.naver.com/main/ranking/popularDay.naver"], "parse": _parse_naver("naverview", 2)},
@@ -502,7 +562,8 @@ SOURCES = [
 
 # 직접 못 읽는 곳(로그인·봇 차단). Claude 웹검색으로 찾아 온 글에 붙는 출처 이름.
 WEB_SOURCES = {
-    "threads": ("스레드", "스레드"),
+    "threads": ("스레드", "SNS"),
+    "instagram": ("인스타그램", "SNS"),
     "petition": ("국민동의청원", "뉴스·청원"),
     "instiz": ("인스티즈", "사연·폭로"),
     "ppomppu": ("뽐뿌", "남초·이슈"),
@@ -535,7 +596,7 @@ def crawl_source(src):
 # ── 본문 가져오기 ───────────────────────────────────────────
 
 BODY_SELECTORS = {
-    "pann": ["div#contentArea"], "theqoo": ["div.rd_body", "article"], "cook82": ["div#articleBody"],
+    "pann": ["div#contentArea"], "pann_cat": ["div#contentArea"], "theqoo": ["div.rd_body", "article"], "cook82": ["div#articleBody"],
     "dcbest": ["div.write_div"], "fmkorea": ["div.rd_body", "article"], "ruliweb": ["div.view_content"],
     "clien": ["div.post_article"], "mlbpark": ["div#contentDetail", "div.ar_txt"],
     "todayhumor": ["div.viewContent"], "dogdrip": ["div.rd_body", "div.xe_content"],
@@ -545,8 +606,20 @@ BODY_SELECTORS = {
 }
 
 
-def fetch_body(source, url, limit=6000):
+def fetch_title(html):
+    m = re.search(r'<meta[^>]+property="og:title"[^>]+content="([^"]+)"', html) or re.search(r"<title>(.*?)</title>", html, re.S)
+    import html as _h
+    return re.sub(r"\s*[:|-]\s*네이트\s*판.*$", "", _h.unescape(m.group(1))).strip() if m else ""
+
+
+def fetch_body(source, url, limit=6000, want_title=False):
     html = fetch(url)
+    if want_title:
+        return fetch_title(html), fetch_body_from(source, html, limit)
+    return fetch_body_from(source, html, limit)
+
+
+def fetch_body_from(source, html, limit=6000):
     doc = minisoup.parse(html)
     for sel in BODY_SELECTORS.get(source, []):
         n = doc.select_one(sel)

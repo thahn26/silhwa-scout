@@ -42,6 +42,10 @@ except OSError:
 # 윈도우 설치본은 실행기(launcher.pyw)가 켜면서 자기 위치를 알려 준다 → 자동 업데이트를 쓴다
 LAUNCHER = os.environ.get("SS_LAUNCHER", "")
 update_info = {"ready": "", "checkedAt": 0, "error": ""}
+# 로그인 수집(스레드·인스타그램) 공유 목록: 대표 컴퓨터(토큰 있음)가 GitHub feed 브랜치에 올리고, 나머지는 받아 온다
+feed_info = {"role": "", "lastPublish": 0, "lastFetch": 0, "count": 0, "error": ""}
+FEED_FIELDS = ("source", "title", "url", "excerpt", "bodySnippet", "body", "views", "likes", "comments", "timeText", "ts",
+               "category", "query")
 POSTS = os.path.join(DATA, "posts.json")
 SAVED = os.path.join(DATA, "saved.json")
 CONFIG = os.path.join(DATA, "config.json")
@@ -54,9 +58,46 @@ MAX_BODY = 4 * 1024 * 1024
 os.makedirs(REPORTS, exist_ok=True)
 os.makedirs(WORK, exist_ok=True)
 lock = threading.RLock()
+# 로그인 수집: 스레드·인스타그램 페이지(브라우저)에서 바로 글을 넣을 때 쓰는 비밀 키. 이 키가 없으면 외부 페이지 요청은 모두 막는다.
+IMPORT_ORIGINS = ("https://www.threads.com", "https://threads.com", "https://www.threads.net", "https://www.instagram.com")
+_key_file = os.path.join(DATA, "import_key.txt")
+try:
+    with open(_key_file, encoding="utf-8") as _f:
+        IMPORT_KEY = _f.read().strip()
+except OSError:
+    IMPORT_KEY = ""
+if len(IMPORT_KEY) < 20:
+    import secrets
+    IMPORT_KEY = secrets.token_hex(16)
+    with open(_key_file, "w", encoding="utf-8") as _f:
+        _f.write(IMPORT_KEY)
+    os.chmod(_key_file, 0o600)
 last_ping = time.time()
 
-DEFAULT_CRITERIA = """<실화탐사대>는 MBC 시사교양 프로그램으로, 실제로 벌어진 사건·사고와 그 이면을 현장 취재해 전한다.
+DEFAULT_CRITERIA = """<실화탐사대>는 MBC 시사교양 프로그램(목 밤 9시, 전국 시청률 2.4~4.6%)으로, 제보자가 겪은 실제 사건을 현장 취재해 한 회에 두 편씩 전한다.
+큰 사건과 생활 속 사건을 고루 다룬다. 아래 네 갈래 모두 좋은 아이템이며, 어느 한쪽만 높게 치지 않는다.
+A. 큰 사건 — 죽음·실종의 진실과 수사 의문(의정부 일가족 사망, 약혼자 실종 사망, 제주 야자수 농장 사망 부실수사, 교회에서 숨진 11세),
+   강력 범죄(약물 연쇄 살인, 흉기범, 헬스장 집단 폭행), 돌봄 시설 학대(요양보호사 학대 홈캠, 보육원·애견유치원), 의료사고.
+B. 반복·지속되는 생활 피해 — 사소해도 매일·몇 달째·몇 년째 되풀이되어 주변을 괴롭히는 일(공포의 확성기녀, 1년 가까이 이어진 이웃 욕설 소음,
+   주차전쟁, 2년간 17번 환불한 '배달거지', 6년째 악성민원, 저장강박 집, 미스터리 낙서).
+C. 기이한 인물·사연 — 강한 캐릭터와 '왜 저럴까' 궁금증(트위스트녀, 길막한 소, 사라진 고양이들).
+D. 가족·돈·가짜 권위 — 의식불명 여성 몰래 혼인신고, 유골을 마당에 뿌린 장남, 박수무당 '도령' 사기, 금 투자 열풍.
+시청률 참고(2026, 회차 전체 기준이라 두 편이 섞임): 공포의 확성기녀 4.6%, 애견유치원·떡방앗간 4.4%, 트위스트녀·금 4.4%,
+몰래 혼인신고 3.8%, 의정부 일가족 3.7%, 19금 욕설 이웃 3.6% / 보육원 학대 2.4%, 박수무당 2.5%, 에스테틱 갑질 2.6%, 의료사고 2.8%.
+→ 인물·궁금증이 강하고 '우리 동네에도 있을 법한' 이야기, 가족·돈을 둘러싼 반전이 반응이 좋다.
+
+어느 갈래든 공통으로 가점:
+- 피해자·가족이 직접 호소한다(제보자를 만날 수 있다)
+- 피해가 반복되거나 주변 여러 사람에게 번진다
+- 경찰·관리사무소·구청·플랫폼에 알렸는데도 해결이 안 된다(부실 대응, 제도 허점)
+- CCTV·홈캠·블랙박스·녹음 같은 증거, 찍을 현장, 강한 인물이 있다
+- 정체·이유·진실을 추적할 궁금증이 있다
+낮은 점수:
+- 단순 유머·짤·게임·스포츠·연예 가십, 정치 공방, 해외 토픽, 쇼핑·재테크 정보, 광고·홍보
+- 한 번으로 끝난 가벼운 해프닝(피해·궁금증·해결 실패가 없는 것)
+- 주작(지어낸 글)이 의심되거나 사실 확인이 사실상 불가능한 글
+- 이미 대형 언론이 충분히 다룬 사건(단, 새 피해자·후속 쟁점이 있으면 가점)"""
+OLD_DEFAULT_CRITERIA = """<실화탐사대>는 MBC 시사교양 프로그램으로, 실제로 벌어진 사건·사고와 그 이면을 현장 취재해 전한다.
 좋은 아이템:
 - 억울한 피해자나 제보자가 있고, 직접 만나 인터뷰할 수 있을 것 같은 사연
 - 사기·금전 피해, 실종·미스터리, 폭력·학대, 이웃·가족 갈등, 갑질, 교통사고·안전사고, 범죄 수사의 허점, 기이한 인물·현상
@@ -70,14 +111,15 @@ DEFAULT_CRITERIA = """<실화탐사대>는 MBC 시사교양 프로그램으로, 
 
 CATEGORIES = ["사기·금전피해", "실종·미스터리", "폭력·학대", "가족·이웃갈등", "갑질·직장", "교통·안전사고",
               "범죄·수사", "사회고발·제도", "기이한 사연", "해당없음"]
-AI_VERSION = 2  # 채점 규칙이 바뀌면 올린다. 예전 규칙으로 채점된 글은 다시 채점 대상이 된다.
+AI_VERSION = 4  # 채점 규칙이 바뀌면 올린다. 예전 규칙으로 채점된 글은 다시 채점 대상이 된다.
 WRITERS = ["당사자", "가족·지인", "목격자", "제3자", "뉴스퍼옴", "언론보도"]
 FILTER_RULES = """항상 지키는 규칙(PD 지시):
+0. 큰 사건(죽음·실종·강력범죄·학대)과, 사소하더라도 반복·지속되며 주변에 피해를 주는 일은 똑같이 좋은 아이템이다.
 1. 피해자 본인이나 가족이 직접 쓴 글을 가장 높게 친다. 1인칭 호소('제가 당했습니다', '저희 아버지가', '도와주세요', '널리 알려주세요')가 있으면 크게 가점한다.
 2. 뉴스 기사를 캡처하거나 퍼 와서 올린 글(기사 내용·기사 링크·캡처가 전부이고 글쓴이 자신의 이야기가 없는 글)은 제외한다.
    단, 당사자나 가족이 '제 사건이 기사로 났다'며 기사와 함께 자기 이야기를 쓴 글은 제외하지 않는다.
-3. 가해자가 이미 체포·구속·검거·송치·기소됐거나 재판·선고 단계인 사건, 경찰이 이미 가해자를 입건해 수사 중인 사건은 제외한다.
-   단, 경찰이 신고를 받고도 수사를 안 하거나, 무혐의·불송치·사건 은폐·조작 의혹처럼 수사기관이 제 역할을 못 한다고 피해자가 호소하는 글은 제외하지 않는다(오히려 가점)."""
+3. 이미 결론이 난 사건(판결·선고로 끝났고 새 쟁점이 없는 사건)은 제외한다.
+   수사 중이거나 재판 중이어도 풀리지 않은 의문, 새 피해자, 수사기관의 부실 대응, 가족이 모르는 진실처럼 취재할 거리가 남아 있으면 제외하지 않는다."""
 
 DEFAULT_CONFIG = {
     "autoInterval": 60,      # 분. 0이면 자동 수집 안 함
@@ -87,6 +129,8 @@ DEFAULT_CONFIG = {
     "model": "sonnet",
     "criteria": DEFAULT_CRITERIA,
     "disabled": [],          # 끈 커뮤니티 id
+    "feedToken": "",         # 윈도우와 공유용 GitHub 토큰(이 컴퓨터가 로그인 수집 대표일 때만)
+    "feedRepo": "thahn26/silhwa-scout",
     "lastCrawl": 0,
 }
 
@@ -114,6 +158,8 @@ def write_json(fn, data):
 posts = read_json(POSTS, {})
 saved = read_json(SAVED, {})
 config = dict(DEFAULT_CONFIG, **read_json(CONFIG, {}))
+if config.get("criteria") == OLD_DEFAULT_CRITERIA:  # 기본 기준을 그대로 쓰던 경우 새 기본값으로 바꾼다(직접 고친 기준은 그대로)
+    config["criteria"] = DEFAULT_CRITERIA
 jobs = {k: {"running": False, "startedAt": 0, "finishedAt": 0, "message": "", "progress": ""}
         for k in ("crawl", "score", "web")}
 source_status = {}
@@ -132,6 +178,12 @@ def save_saved():
 def save_config():
     with lock:
         write_json(CONFIG, config)
+
+
+def public_config():
+    c = {k: v for k, v in config.items() if k != "feedToken"}
+    c["feedTokenSet"] = bool(config.get("feedToken"))
+    return c
 
 
 def post_id(url):
@@ -159,7 +211,7 @@ KEYWORDS = {
         "도주 수배 음주운전 횡령 다단계 분통 파양 유기 노예 착취 임금체불 전세 보증금 잠수",
     6: "황당 충격 경악 결국 논란 사연 사고 분노 참교육 가해자 신고 민원 이상한 무서운 소름",
     # 이미 수사기관이 처리 중인 사건은 제외 대상(PD 지시)
-    -20: "구속 체포 검거 송치 기소 징역 실형 선고 입건 재판에",
+    -20: "실형 선고 판결확정 무기징역",
     -15: "핫딜 게임 LoL 롤 블루아카 스포) 축구 야구 국대 손흥민 아이돌 컴백 앨범 뮤비 굿즈 코스피 주가 대통령 민주당 국민의힘 여당 "
          "야당 대선 총선 선거 예능 웹툰 만화 manhwa 추천pc 할인 특가 광고 이벤트 아시안게임 금메달",
     -6: ".gif .mp4 짤 움짤 리뷰 후기 드라마 영화 주식 코인시세 부동산 정책",
@@ -193,10 +245,19 @@ R_FIRST = re.compile(r"도와주세요|도와주십시오|억울합니다|억울
                      r"조언 부탁|어떻게 해야|신고했는데|신고했지만")
 R_NEWS_BODY = re.compile(r"기자\s*=|기자\]|[\w.]+@[\w.]+\.(co\.kr|com)|무단\s?전재|재배포\s?금지|저작권자|Copyright|뉴시스|연합뉴스|뉴스1|"
                          r"n\.news\.naver\.com|v\.daum\.net")
-R_ARREST = re.compile(r"구속|체포|검거|송치|기소|징역|실형|선고|입건|영장|구형|재판에 넘겨|검찰에 넘겨")
-R_POLICE_FAIL = re.compile(r"수사\s?(를\s?)?(안|않|거부|미흡|부실)|무혐의|불송치|은폐|조작|봐주기|부실\s?수사|솜방망이|종결|각하|"
+# 결론이 난 사건(판결·선고) — 수사 중인 사건은 의문점이 있으면 남긴다(PD 지시 변경)
+R_ARREST = re.compile(r"징역\s?\d|실형|선고|판결\s?확정|확정\s?판결|형이?\s?확정|무기징역|사형\s?선고")
+R_POLICE_FAIL = re.compile(r"의문|억울|진실|재수사|항소|피해자가\s?더|추가\s?피해|수사\s?(를\s?)?(안|않|거부|미흡|부실)|무혐의|불송치|은폐|조작|봐주기|부실\s?수사|솜방망이|종결|각하|"
                            r"경찰이\s?(안|무시|방관)|신고했는데|신고했지만")
 R_EVIDENCE = re.compile(r"CCTV|cctv|블박|블랙박스|녹취|녹음|영상|사진|캡처|캡쳐|증거|판결문|문자|카톡|진단서|계약서|영수증")
+R_REPEAT = re.compile(r"매일|매번|날마다|밤마다|새벽마다|주말마다|아침마다|몇\s?달째|몇\s?년째|\d+\s?(달|개월|년)\s?(째|동안|넘게)|수년간|수개월|"
+                      r"\d+\s?(번째|차례|번이나|번을)|(?<![가-힣])또\s|또다시|계속|반복|끊이지|하루도|몇\s?번|(?<![가-힣])늘\s|항상|상습")
+R_SPREAD = re.compile(r"이웃들|주민들|입주민|단지|동네|아파트 전체|온 동네|다른 집|다른 사람들|여러 명|피해자가\s?(많|여러)|손님들|"
+                      r"직원들|학부모들|주변\s?(사람|가게|집)|우리 동|옆집|아랫집|윗집")
+R_UNRESOLVED = re.compile(r"관리사무소|관리실|경찰에?\s?신고|112|구청|시청|주민센터|민원|신고해도|신고했는데|소용(이)?\s?없|해결이?\s?안|"
+                          r"방법이 없|어떻게 해야|도와주세요|답이 없|무시")
+R_BIG = re.compile(r"사망|숨진|숨져|시신|살인|살해|실종|행방불명|학대|성폭|납치|감금|방화|일가족|의문사|변사|흉기|중태|의식불명|의료사고|유골")
+R_MYSTERY = re.compile(r"정체|미스터리|미스테리|수상한|의문|알 수 없|이유를 모르|왜 그러는지|기이|괴상|섬뜩|소름")
 R_CATS = [
     ("사기·금전피해", r"사기|먹튀|미환불|환불|보이스피싱|피싱|전세|보증금|리딩방|코인|투자|횡령|잠적|떼먹|돈을 안|대금|선결제"),
     ("실종·미스터리", r"실종|행방불명|찾습니다|찾아주세요|미스터리|미스테리|기이|귀신|괴담|소름|정체불명"),
@@ -212,7 +273,8 @@ R_FLAGS = [
     ("연예", re.compile(r"아이돌|연예인|배우|가수|유튜버|스트리머|방송인|컴백|드라마|예능|BJ|앨범|팬미팅|열애")),
     ("정치", re.compile(r"대통령|민주당|국민의힘|여당|야당|국회|의원|선거|대선|총선|탄핵|정부|장관|李|尹|좌파|우파|빨갱이|2찍|선관위|매국")),
     ("해외", re.compile(r"美|中|日|英|미국|중국|일본|러시아|우크라|해외|외신|트럼프|북한")),
-    ("유머", re.compile(r"\.jpg|\.gif|\.mp4|jpg$|gif$|ㅋㅋㅋ|웃긴|짤|유머|레전드|근황|manhwa|만화|게임|축구|야구|핫딜|할인|광고|협찬|공구")),
+    ("유머", re.compile(r"\.jpg|\.gif|\.mp4|jpg$|gif$|ㅋㅋㅋ|웃긴|짤|유머|레전드|근황|manhwa|만화|게임|축구|야구")),
+    ("광고", re.compile(r"변호사|법무법인|법률사무소|무료\s?상담|상담\s?문의|견적|시공|업체\s?추천|체험단|서평|협찬|공구|핫딜|할인|이벤트|분양|모집합니다|수강|클래스|판매\s?합니다|판매중|DM\s?(주세요|문의)|연락\s?주세요|\d{2,3}-\d{3,4}-\d{4}|카카오\s?채널|오픈\s?채팅")),
 ]
 
 
@@ -224,8 +286,8 @@ def rule_classify(p):
     family, first = R_FAMILY.search(text), R_FIRST.search(text)
     if group == "뉴스·청원":
         writer = "언론보도"
-    elif first and family:
-        writer = "가족·지인"
+    elif family and (first or R_BIG.search(text) or re.search(r"피해|범행|가해자|폭행|사고|사기|수사|신고", text)):
+        writer = "가족·지인"  # '저희 아이/아버지'와 피해 표현이 함께 있으면 가족이 쓴 글로 본다
     elif first:
         writer = "당사자"
     elif p.get("newsLike") or len(R_NEWS_BODY.findall(p.get("bodySnippet") or "")) >= 2:
@@ -247,6 +309,14 @@ def rule_classify(p):
     score += 25 if category != "해당없음" else 0
     score += 25 if writer in ("당사자", "가족·지인") else 0
     score += 8 if evidence else 0
+    repeat, spread = R_REPEAT.search(text), R_SPREAD.search(text)
+    unresolved, mystery = R_UNRESOLVED.search(text), R_MYSTERY.search(text)
+    big = R_BIG.search(text)
+    score += 12 if big else 0          # 큰 사건(죽음·실종·강력범죄·학대)
+    score += 12 if repeat else 0       # 사소해도 반복·지속되는 피해(PD 지시) — 큰 사건과 같은 비중
+    score += 8 if spread else 0
+    score += 8 if unresolved else 0
+    score += 5 if mystery else 0
     score += min(10, 3 * max(0, n - 1))  # 사건 표현이 여러 번 나오면 조금 더
     score -= 20 * len(flags)
     if writer == "언론보도":
@@ -256,6 +326,14 @@ def rule_classify(p):
     reason = [{"당사자": "피해자 본인 글", "가족·지인": "가족·지인 글", "언론보도": "언론 기사", "뉴스퍼옴": "뉴스 퍼온 글"}.get(writer, "")]
     if category != "해당없음":
         reason.append(category)
+    if big:
+        reason.append("큰 사건(" + big.group(0) + ")")
+    if repeat:
+        reason.append("반복 피해(" + repeat.group(0).strip() + ")")
+    if spread:
+        reason.append("주변 피해")
+    if unresolved:
+        reason.append("해결 안 됨")
     if evidence:
         reason.append("증거 언급(" + ", ".join(sorted(set(evidence))[:2]) + ")")
     if flags:
@@ -285,7 +363,12 @@ def rule_body_pass(limit=40):
 
     def grab(p):
         try:
-            p["bodySnippet"] = sources.fetch_body(p["source"], p["url"], limit=800)
+            if p.get("titleCut"):
+                t, p["bodySnippet"] = sources.fetch_body(p["source"], p["url"], limit=800, want_title=True)
+                if t:
+                    p["title"], p["titleCut"] = t, False
+            else:
+                p["bodySnippet"] = sources.fetch_body(p["source"], p["url"], limit=800)
         except Exception:  # noqa: BLE001
             p["bodySnippet"] = ""
         rule_classify(p)
@@ -525,7 +608,7 @@ def score_prompt(batch):
 ## 출력
 JSON 배열만 출력한다. 다른 말은 쓰지 않는다. 글마다 하나씩:
 {{"i": 번호, "score": 0~100 정수, "category": "분류", "writer": "{'|'.join(WRITERS)} 중 하나(글쓴이가 누구인가)",
- "excluded": "" 또는 "뉴스퍼옴" 또는 "구속·수사중" (규칙 2·3에 걸리면), "reason": "왜 이 점수인지 한 문장(40자 안팎)",
+ "excluded": "" 또는 "뉴스퍼옴" 또는 "구속·수사중"(규칙 3: 이미 결론 난 사건) (규칙 2·3에 걸리면), "reason": "왜 이 점수인지 한 문장(40자 안팎)",
  "angle": "아이템이 된다면 취재 포인트 한 문장(점수 50 미만이면 빈 문자열)", "flags": ["주작의심"|"연예"|"정치"|"해외"|"유머"|"기보도" 중 해당하는 것]}}
 점수 감각: 80 이상=바로 회의에 올릴 만함, 60~79=본문 확인해 볼 만함, 40~59=약함, 40 미만=해당 없음.
 excluded가 비어 있지 않으면 score는 15 이하로 준다. 당사자·가족 글이 아니면 80점 이상은 드물게 준다."""
@@ -586,7 +669,12 @@ def score_job(ids=None):
             def grab(p):
                 if not p.get("bodySnippet") and p["source"] in sources.BY_ID:
                     try:
-                        p["bodySnippet"] = sources.fetch_body(p["source"], p["url"], limit=800)
+                        if p.get("titleCut"):
+                            t, p["bodySnippet"] = sources.fetch_body(p["source"], p["url"], limit=800, want_title=True)
+                            if t:
+                                p["title"], p["titleCut"] = t, False
+                        else:
+                            p["bodySnippet"] = sources.fetch_body(p["source"], p["url"], limit=800)
                     except Exception:  # noqa: BLE001
                         p["bodySnippet"] = ""
                     rule_classify(p)
@@ -740,9 +828,13 @@ class Handler(SimpleHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         super().end_headers()
 
+    _cors = ""
+
     def _json(self, code, obj=None):
         body = b"" if obj is None else json.dumps(obj, ensure_ascii=False).encode("utf-8")
         self.send_response(code)
+        if self._cors:
+            self.send_header("Access-Control-Allow-Origin", self._cors)
         if obj is not None:
             self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
@@ -775,7 +867,7 @@ class Handler(SimpleHTTPRequestHandler):
             with lock:
                 light = [{k: v for k, v in p.items() if k not in ("body", "bodySnippet")} for p in posts.values()]
                 return self._json(200, {
-                    "posts": light, "saved": saved, "config": config, "jobs": jobs, "categories": CATEGORIES,
+                    "posts": light, "saved": saved, "config": public_config(), "jobs": jobs, "feed": feed_info, "categories": CATEGORIES,
                     "defaultCriteria": DEFAULT_CRITERIA, "filterRules": FILTER_RULES, "aiVersion": AI_VERSION,
                     "platform": "windows" if IS_WIN else "mac", "version": VERSION, "update": update_info,
                     "sources": [{"id": s["id"], "name": s["name"], "group": s["group"], "url": s["urls"][0],
@@ -786,6 +878,8 @@ class Handler(SimpleHTTPRequestHandler):
             with lock:
                 return self._json(200, {"jobs": jobs, "lastCrawl": config.get("lastCrawl"),
                                         "version": VERSION, "update": update_info})
+        if path == "/api/import-key":  # 이 컴퓨터 안에서만(스케줄 작업이 읽는다)
+            return self._json(200, {"key": IMPORT_KEY})
         if path == "/api/version":
             return self._json(200, {"version": VERSION})
         if path == "/api/reports":
@@ -799,15 +893,37 @@ class Handler(SimpleHTTPRequestHandler):
             return self._json(200, claude_status(force=True))
         return self._json(404, {"error": "not found"})
 
+    def _import_origin(self):
+        origin = self.headers.get("Origin") or ""
+        host = (self.headers.get("Host") or "").split(":")[0]
+        return origin if origin in IMPORT_ORIGINS and host in ("127.0.0.1", "localhost") else ""
+
+    def do_OPTIONS(self):
+        origin = self._import_origin()
+        if not origin or urllib.parse.urlparse(self.path).path != "/api/import":
+            return self._json(403, {"error": "forbidden"})
+        self.send_response(204)
+        self.send_header("Access-Control-Allow-Origin", origin)
+        self.send_header("Access-Control-Allow-Methods", "POST")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Access-Control-Allow-Private-Network", "true")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
     def do_POST(self):
         global last_ping
-        if not self._local_only():
-            return self._json(403, {"error": "forbidden"})
         path = urllib.parse.urlparse(self.path).path
+        origin = self._import_origin()
+        if not self._local_only() and not (origin and path == "/api/import"):
+            return self._json(403, {"error": "forbidden"})
         try:
             body = self._body()
         except (ValueError, OverflowError):
             return self._json(400, {"error": "bad request"})
+        if origin and not self._local_only():
+            if body.get("key") != IMPORT_KEY:
+                return self._json(403, {"error": "forbidden"})
+            self._cors = origin
         if path == "/api/ping":
             last_ping = time.time()
             return self._json(200, {"ok": True})
@@ -849,7 +965,7 @@ class Handler(SimpleHTTPRequestHandler):
                       "comments": sources.num(r.get("comments")), "timeText": str(r.get("timeText") or ""),
                       "ts": r.get("ts") or sources.parse_time(str(r.get("timeText") or "")),
                       "category": str(r.get("author") or ""), "rank": None, "web": True,
-                      "query": str(r.get("query") or "")}
+                      "query": str(r.get("query") or ""), "via": "browser" if r.get("via", "browser") == "browser" else "manual"}
                 batch.append(it)
             prescore(batch)
             with lock:
@@ -864,8 +980,11 @@ class Handler(SimpleHTTPRequestHandler):
                         added += 1
                     ids.append(pid)
             save_posts()
+            if config.get("feedToken"):
+                threading.Thread(target=publish_feed, daemon=True).start()
             todo = [i for i in ids if (posts[i].get("ai") or {}).get("v") != AI_VERSION]
-            started = bool(todo) and claude_ready() and start_job("score", score_job, todo)
+            # 많이 한꺼번에 들어오면(로그인 수집) 여기서 다 채점하지 않고, 평소 자동 채점이 예비 점수 상위부터 고른다
+            started = bool(todo) and len(todo) <= 15 and claude_ready() and start_job("score", score_job, todo)
             return self._json(200, {"received": len(batch), "added": added, "scoring": started,
                                     "note": "" if started or not todo else "채점이 이미 진행 중이거나 Claude 연결 전이라 다음 채점 때 처리됩니다"})
         if path == "/api/save":
@@ -895,10 +1014,14 @@ class Handler(SimpleHTTPRequestHandler):
                     config["model"] = body["model"]
                 if "criteria" in body:
                     config["criteria"] = str(body["criteria"] or "").strip() or DEFAULT_CRITERIA
+                if "feedToken" in body:
+                    config["feedToken"] = str(body.get("feedToken") or "").strip()
                 if isinstance(body.get("disabled"), list):
                     config["disabled"] = [str(x) for x in body["disabled"]]
             save_config()
-            return self._json(200, config)
+            if "feedToken" in body:
+                threading.Thread(target=publish_feed if config.get("feedToken") else consume_feed, daemon=True).start()
+            return self._json(200, public_config())
         if path == "/api/body":
             p = posts.get(body.get("id")) or (saved.get(body.get("id")) or {}).get("post")
             if not p:
@@ -968,6 +1091,96 @@ class Handler(SimpleHTTPRequestHandler):
         return self._json(404, {"error": "not found"})
 
 
+def feed_url():
+    return os.environ.get("SS_FEED_URL") or f"https://raw.githubusercontent.com/{config.get('feedRepo')}/feed/feed.json"
+
+
+def gh(method, path, body=None):
+    import urllib.request
+    import urllib.error
+    req = urllib.request.Request("https://api.github.com/repos/" + config.get("feedRepo") + path, method=method,
+                                 data=None if body is None else json.dumps(body).encode("utf-8"),
+                                 headers={"Authorization": "Bearer " + config.get("feedToken", ""),
+                                          "Accept": "application/vnd.github+json", "User-Agent": "SilhwaScout",
+                                          "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=30, context=sources.SSL_CTX) as r:
+            return r.status, json.loads(r.read() or b"{}")
+    except urllib.error.HTTPError as e:
+        return e.code, {}
+
+
+def publish_feed():
+    """로그인해서 모은 SNS 글(최근 3일)을 GitHub feed 브랜치의 feed.json으로 올린다."""
+    import base64
+    if not config.get("feedToken"):
+        return
+    now = time.time()
+    with lock:
+        items = [{k: p.get(k) for k in FEED_FIELDS} for p in posts.values()
+                 if p.get("via") == "browser" and p.get("lastSeen", 0) >= now - 3 * 86400]
+    data = json.dumps({"version": 1, "at": now, "posts": items}, ensure_ascii=False).encode("utf-8")
+    try:
+        st, _ = gh("GET", "/git/ref/heads/feed")
+        if st == 404:
+            st, main = gh("GET", "/git/ref/heads/main")
+            if st != 200:
+                raise RuntimeError(f"저장소를 읽지 못했습니다({st}) — 토큰 권한을 확인해 주세요")
+            gh("POST", "/git/refs", {"ref": "refs/heads/feed", "sha": main["object"]["sha"]})
+        elif st != 200:
+            raise RuntimeError(f"저장소에 접근하지 못했습니다({st}) — 토큰을 확인해 주세요")
+        st, cur = gh("GET", "/contents/feed.json?ref=feed")
+        body = {"message": f"공유 목록 {len(items)}건", "branch": "feed", "content": base64.b64encode(data).decode()}
+        if st == 200:
+            body["sha"] = cur.get("sha")
+        st, _ = gh("PUT", "/contents/feed.json", body)
+        if st not in (200, 201):
+            raise RuntimeError(f"올리지 못했습니다({st}) — 토큰에 Contents 쓰기 권한이 있는지 확인해 주세요")
+        feed_info.update(role="producer", lastPublish=now, count=len(items), error="")
+    except Exception as e:  # noqa: BLE001
+        feed_info.update(role="producer", error=str(e)[:200])
+
+
+def consume_feed():
+    """대표 컴퓨터가 올린 SNS 글을 받아 와서 목록에 넣는다(각자 자동 필터로 판단)."""
+    now = time.time()
+    try:
+        data = json.loads(sources.fetch(feed_url() + f"?t={int(now)}", timeout=20))
+        added = 0
+        with lock:
+            for fp in data.get("posts") or []:
+                url = fp.get("url") or ""
+                if not url.startswith("http"):
+                    continue
+                pid = post_id(url)
+                if pid in posts:
+                    posts[pid]["lastSeen"] = now
+                    continue
+                p = {k: fp.get(k) for k in FEED_FIELDS}
+                p.update(id=pid, firstSeen=now, lastSeen=now, seenCount=1, web=True, shared=True, rank=None)
+                p["source"] = p["source"] if p.get("source") in sources.WEB_SOURCES else "threads"
+                prescore([p])
+                posts[pid] = p
+                added += 1
+        if added:
+            save_posts()
+        feed_info.update(role="consumer", lastFetch=now, count=len(data.get("posts") or []), error="")
+    except Exception as e:  # noqa: BLE001
+        feed_info.update(role="consumer", lastFetch=now, error=str(e)[:200])
+
+
+def feed_watch():
+    time.sleep(30)
+    while True:
+        if config.get("feedToken"):
+            feed_info["role"] = "producer"
+            if time.time() - feed_info["lastPublish"] > 3600:
+                publish_feed()
+        else:
+            consume_feed()
+        time.sleep(600 if config.get("feedToken") else 3600)
+
+
 def update_watch():
     """윈도우 설치본: 켜진 뒤 1분, 그 뒤 6시간마다 새 버전을 받아 두고 화면에 알린다."""
     if not LAUNCHER:
@@ -1010,6 +1223,7 @@ if __name__ == "__main__":
     srv = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
     threading.Thread(target=scheduler, args=(srv,), daemon=True).start()
     threading.Thread(target=update_watch, daemon=True).start()
+    threading.Thread(target=feed_watch, daemon=True).start()
     print(f"실화탐사대 아이템 레이더: http://127.0.0.1:{PORT}  (데이터: {DATA})", flush=True)
     try:
         srv.serve_forever()
