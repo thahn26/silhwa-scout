@@ -1,7 +1,8 @@
-# 윈도우 설치 파일(SilhwaScout_Setup_*.exe) 만들기.
+# 윈도우 설치 파일(Silhwatamsadae_Setup_*.exe) 만들기.
 # main에 올릴 때마다 GitHub의 윈도우 서버에서
 #   1) 설치 없는 파이썬을 받고  2) 실제로 앱 서버를 켜서 수집까지 시험한 뒤  3) Inno Setup으로 설치 파일을 만든다.
-# 결과는 저장소의 Releases 페이지에 올라간다.
+# 결과는 저장소의 Releases 페이지에 올라간다. 설치 파일과 함께 올라가는 version.txt·app-update.zip을
+# 이미 설치된 앱이 받아서 스스로 업데이트한다(updater.py). 시험을 통과한 버전만 올라가므로 깨진 코드는 퍼지지 않는다.
 name: 윈도우 설치 파일 만들기
 
 on:
@@ -14,6 +15,7 @@ permissions:
 
 env:
   PYTHON_VERSION: "3.12.10"
+  APP_VERSION: "1.0.${{ github.run_number }}"
 
 jobs:
   build:
@@ -29,6 +31,13 @@ jobs:
           Expand-Archive py.zip -DestinationPath build/python
           build/python/python.exe --version
 
+      - name: 버전 파일 만들기
+        shell: pwsh
+        run: |
+          Set-Content -Path version.txt -Value $env:APP_VERSION -NoNewline
+          & build/python/python.exe -c "import sys; sys.path.insert(0, '.'); import updater, sources, minisoup; print('import ok')"
+          if ($LASTEXITCODE -ne 0) { throw "파이썬 파일을 불러오지 못했습니다" }
+
       - name: 윈도우에서 앱 서버 시험
         shell: pwsh
         run: |
@@ -42,6 +51,8 @@ jobs:
             try { Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8766/api/ping -Body '{}' -ContentType 'application/json' | Out-Null; $ok = $true; break } catch { Start-Sleep -Milliseconds 200 }
           }
           if (-not $ok) { Get-Content "$env:RUNNER_TEMP/err.log"; throw "서버가 켜지지 않았습니다" }
+          $ver = Invoke-RestMethod -Uri http://127.0.0.1:8766/api/version
+          if ($ver.version -ne $env:APP_VERSION) { throw "버전이 맞지 않습니다: $($ver.version)" }
           $page = Invoke-WebRequest -Uri http://127.0.0.1:8766/ -UseBasicParsing
           if ($page.Content -notmatch "app.js") { throw "화면 파일을 내보내지 못했습니다" }
           Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8766/api/crawl -Body '{}' -ContentType 'application/json' | Out-Null
@@ -70,22 +81,32 @@ jobs:
       - name: 설치 파일 만들기
         shell: pwsh
         run: |
-          $env:APP_VERSION = "1.0.${{ github.run_number }}"
           & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" windows\installer.iss
           if ($LASTEXITCODE -ne 0) { throw "설치 파일 만들기 실패" }
           Get-ChildItem dist
 
+      - name: 자동 업데이트 파일 만들기
+        shell: pwsh
+        run: |
+          Compress-Archive -Path server.py, sources.py, minisoup.py, updater.py, version.txt, web -DestinationPath dist/app-update.zip -Force
+          Copy-Item version.txt dist/version.txt
+          Get-ChildItem dist
+
       - uses: actions/upload-artifact@v4
         with:
-          name: SilhwaScout_Setup
-          path: dist/*.exe
+          name: Silhwatamsadae_Setup
+          path: dist/*
 
       - name: Releases에 올리기
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.0.${{ github.run_number }}
-          name: 실화탐사대 아이템 레이더 1.0.${{ github.run_number }}
+          tag_name: v${{ env.APP_VERSION }}
+          name: 실화탐사대 ${{ env.APP_VERSION }}
           body: |
-            윈도우 설치 파일입니다. 아래 SilhwaScout_Setup_*.exe 를 받아 실행하세요.
+            윈도우 설치 파일입니다. 아래 Silhwatamsadae_Setup_*.exe 를 받아 실행하세요(받은 뒤 파일 이름을 "실화탐사대_설치.exe"로 바꿔 보내도 됩니다).
             파란 "Windows의 PC 보호" 창이 뜨면 [추가 정보] → [실행].
-          files: dist/*.exe
+            이미 설치한 PC는 앱을 켤 때 이 버전으로 자동 업데이트됩니다(version.txt, app-update.zip은 자동 업데이트용).
+          files: |
+            dist/*.exe
+            dist/app-update.zip
+            dist/version.txt
