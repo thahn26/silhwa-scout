@@ -1,16 +1,16 @@
 #!/bin/bash
-# '실화탐사대 아이템 레이더.app'을 만든다. 필요한 파일(web/, *.py, launch.sh)을 앱 안에 복사하므로
+# '실화탐사대.app'을 만든다. 필요한 파일(web/, *.py, launch.sh)을 앱 안에 복사하므로
 # 앱은 이 폴더 없이도 열린다. 파일을 고친 뒤에는 이 스크립트를 다시 실행해야 앱에 반영된다.
 # 사용법: ./make-app.sh [설치할 폴더]   (기본: /Applications, 쓸 수 없으면 ~/Applications)
 set -e
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEST="${1:-/Applications}"
 if [ ! -w "$DEST" ]; then DEST="$HOME/Applications"; mkdir -p "$DEST"; fi
-NAME="실화탐사대 아이템 레이더"
+NAME="실화탐사대"
 APP="$DEST/$NAME.app"
-rm -rf "$APP"
+rm -rf "$APP" "$DEST/실화탐사대 아이템 레이더.app"  # 예전 이름으로 설치된 앱도 지운다
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp -R "$DIR/web" "$DIR/server.py" "$DIR/sources.py" "$DIR/minisoup.py" "$DIR/launch.sh" "$APP/Contents/Resources/"
+cp -R "$DIR/web" "$DIR/server.py" "$DIR/sources.py" "$DIR/minisoup.py" "$DIR/updater.py" "$DIR/launch.sh" "$APP/Contents/Resources/"
 cat > "$APP/Contents/MacOS/launcher" <<'L'
 #!/bin/bash
 exec "$(cd "$(dirname "$0")/../Resources" && pwd)/launch.sh"

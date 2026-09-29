@@ -1,12 +1,12 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
-  <rect x="64" y="64" width="896" height="896" rx="200" fill="#16171A"/>
-  <circle cx="512" cy="512" r="330" fill="none" stroke="#3A3B41" stroke-width="18"/>
-  <circle cx="512" cy="512" r="220" fill="none" stroke="#3A3B41" stroke-width="18"/>
-  <circle cx="512" cy="512" r="110" fill="none" stroke="#3A3B41" stroke-width="18"/>
-  <path d="M512 512 L512 182 A330 330 0 0 1 800 352 Z" fill="#D7263D" opacity=".35"/>
-  <line x1="512" y1="512" x2="800" y2="352" stroke="#D7263D" stroke-width="22" stroke-linecap="round"/>
-  <circle cx="512" cy="512" r="34" fill="#FFFFFF"/>
-  <circle cx="690" cy="300" r="40" fill="#FF4B5E"/>
-  <circle cx="360" cy="650" r="26" fill="#FFFFFF" opacity=".8"/>
-  <circle cx="640" cy="690" r="20" fill="#FFFFFF" opacity=".55"/>
+  <defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#EC3A50"/><stop offset="1" stop-color="#B01A2E"/></linearGradient></defs>
+  <rect x="64" y="64" width="896" height="896" rx="200" fill="url(#g)"/>
+  <path d="M250 230 h400 a80 80 0 0 1 80 80 v210 a80 80 0 0 1 -80 80 h-200 l-130 110 v-110 h-70 a80 80 0 0 1 -80 -80 v-210 a80 80 0 0 1 80 -80z" fill="#FFFFFF"/>
+  <rect x="270" y="320" width="300" height="40" rx="20" fill="#F2C4CA"/>
+  <rect x="270" y="400" width="220" height="40" rx="20" fill="#F2C4CA"/>
+  <rect x="270" y="480" width="170" height="40" rx="20" fill="#F2C4CA"/>
+  <circle cx="650" cy="610" r="150" fill="#FFFFFF" stroke="#16171A" stroke-width="48"/>
+  <line x1="758" y1="718" x2="850" y2="810" stroke="#16171A" stroke-width="72" stroke-linecap="round"/>
+  <rect x="628" y="520" width="44" height="110" rx="22" fill="#D7263D"/>
+  <circle cx="650" cy="680" r="26" fill="#D7263D"/>
 </svg>

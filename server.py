@@ -34,6 +34,14 @@ DATA = os.path.expanduser(os.environ.get("SS_DATA", DEFAULT_DATA))
 # 윈도우에서 pythonw로 돌 때 claude를 부를 때마다 검은 창이 뜨지 않게 한다
 NO_WINDOW = {"creationflags": 0x08000000} if IS_WIN else {}
 PORT = int(os.environ.get("SS_PORT", "8766"))
+try:
+    with open(os.path.join(HERE, "version.txt"), encoding="utf-8") as _f:
+        VERSION = _f.read().strip() or "dev"
+except OSError:
+    VERSION = "dev"  # 맥에서 소스로 돌 때
+# 윈도우 설치본은 실행기(launcher.pyw)가 켜면서 자기 위치를 알려 준다 → 자동 업데이트를 쓴다
+LAUNCHER = os.environ.get("SS_LAUNCHER", "")
+update_info = {"ready": "", "checkedAt": 0, "error": ""}
 POSTS = os.path.join(DATA, "posts.json")
 SAVED = os.path.join(DATA, "saved.json")
 CONFIG = os.path.join(DATA, "config.json")
@@ -259,9 +267,18 @@ def find_claude():
     """Claude 데스크톱 앱에 들어 있는 Claude Code를 먼저 찾고, 없으면 따로 설치한 것을 찾는다."""
     if IS_WIN:
         home = os.path.expanduser("~")
+        appdata, local = os.environ.get("APPDATA", ""), os.environ.get("LOCALAPPDATA", "")
         cands = [os.path.join(home, ".local", "bin", "claude.exe"),
-                 os.path.join(os.environ.get("APPDATA", ""), "npm", "claude.cmd")]
-        cands += sorted(glob.glob(os.path.join(os.environ.get("APPDATA", ""), "Claude", "claude-code", "*", "claude.exe")), reverse=True)
+                 os.path.join(home, ".claude", "local", "claude.exe"),
+                 os.path.join(appdata, "npm", "claude.cmd"),
+                 os.path.join(local, "Microsoft", "WinGet", "Links", "claude.exe")]
+        # Claude 데스크톱 앱에 든 Claude Code. 데스크톱 앱 본체(claude.exe)를 잘못 부르지 않게 'claude-code' 폴더 안만 찾는다.
+        bundled = []
+        for base in (os.path.join(appdata, "Claude"), os.path.join(local, "AnthropicClaude"), os.path.join(local, "Claude")):
+            if base and os.path.isdir(base):
+                bundled += [p for p in glob.glob(os.path.join(base, "**", "claude.exe"), recursive=True)
+                            if "claude-code" in p.lower().replace("\\", "/").split("/")]
+        cands += sorted(bundled, key=lambda p: os.path.getmtime(p), reverse=True)
         for p in cands:
             if os.path.isfile(p):
                 return p
@@ -637,14 +654,17 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._json(200, {
                     "posts": light, "saved": saved, "config": config, "jobs": jobs, "categories": CATEGORIES,
                     "defaultCriteria": DEFAULT_CRITERIA, "filterRules": FILTER_RULES, "aiVersion": AI_VERSION,
-                    "platform": "windows" if IS_WIN else "mac",
+                    "platform": "windows" if IS_WIN else "mac", "version": VERSION, "update": update_info,
                     "sources": [{"id": s["id"], "name": s["name"], "group": s["group"], "url": s["urls"][0],
                                  **source_status.get(s["id"], {})} for s in sources.SOURCES],
                     "webSources": {k: {"name": v[0], "group": v[1]} for k, v in sources.WEB_SOURCES.items()},
                     "claude": claude_status()})
         if path == "/api/jobs":
             with lock:
-                return self._json(200, {"jobs": jobs, "lastCrawl": config.get("lastCrawl")})
+                return self._json(200, {"jobs": jobs, "lastCrawl": config.get("lastCrawl"),
+                                        "version": VERSION, "update": update_info})
+        if path == "/api/version":
+            return self._json(200, {"version": VERSION})
         if path == "/api/reports":
             out = []
             for fn in sorted(os.listdir(REPORTS), reverse=True)[:50]:
@@ -668,6 +688,14 @@ class Handler(SimpleHTTPRequestHandler):
         if path == "/api/ping":
             last_ping = time.time()
             return self._json(200, {"ok": True})
+        if path == "/api/update/apply":
+            if not (LAUNCHER and update_info["ready"]):
+                return self._json(400, {"error": "적용할 업데이트가 없습니다"})
+            # 실행기가 이 서버를 끄고 새 버전으로 다시 켠다(창은 그대로 두고 화면이 알아서 새로고침한다)
+            subprocess.Popen([sys.executable, LAUNCHER, "--restart"], cwd=os.path.dirname(LAUNCHER),
+                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             creationflags=0x00000008 | 0x00000200 if IS_WIN else 0, close_fds=True)
+            return self._json(204)
         if path == "/api/shutdown":  # 윈도우 제거·업데이트 때 설치 프로그램이 부른다
             self._json(204)
             threading.Thread(target=self.server.shutdown, daemon=True).start()
@@ -782,6 +810,24 @@ class Handler(SimpleHTTPRequestHandler):
         return self._json(404, {"error": "not found"})
 
 
+def update_watch():
+    """윈도우 설치본: 켜진 뒤 1분, 그 뒤 6시간마다 새 버전을 받아 두고 화면에 알린다."""
+    if not LAUNCHER:
+        return
+    import updater
+    time.sleep(60)
+    while True:
+        try:
+            v, _ = updater.current()
+            updater.check_and_stage(max(VERSION, v or "0", key=updater.vt), timeout=10, running=VERSION)
+            v, _ = updater.current()
+            update_info.update(ready=v if v and updater.vt(v) > updater.vt(VERSION) else "", error="")
+        except Exception as e:  # noqa: BLE001
+            update_info["error"] = str(e)[:200]
+        update_info["checkedAt"] = time.time()
+        time.sleep(6 * 3600)
+
+
 def scheduler(server):
     """앱이 켜져 있는 동안 정해진 간격마다 수집하고, 창이 닫힌 뒤 오래 조용하면 서버를 끈다."""
     first = True
@@ -805,6 +851,7 @@ if __name__ == "__main__":
             pass
     srv = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
     threading.Thread(target=scheduler, args=(srv,), daemon=True).start()
+    threading.Thread(target=update_watch, daemon=True).start()
     print(f"실화탐사대 아이템 레이더: http://127.0.0.1:{PORT}  (데이터: {DATA})", flush=True)
     try:
         srv.serve_forever()

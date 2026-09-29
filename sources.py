@@ -248,7 +248,13 @@ def _parse_bobae(src):
             if not tr:
                 continue
             cat = tr.select_one("td.category")
-            out.append(item(src, a.get("title") or a.text(), absolute(base, a.get("href")),
+            # title 속성은 따옴표가 \' 로 들어 있거나 '새 창' 같은 엉뚱한 값일 때가 있어 보이는 제목과 비교해 고른다
+            attr = a.get("title").replace("\\'", "'").replace('\\"', '"').strip()
+            text = a.text()
+            title = attr if attr and attr != "새 창" and len(attr) >= len(text.rstrip(". ")) else text
+            if re.search(r"^\[공지\]|참여 이벤트|이벤트 안내", title):
+                continue
+            out.append(item(src, title, absolute(base, a.get("href")),
                             comments=num((tr.select_one("strong.totreply") or minisoup.Node("x")).text()),
                             likes=num((tr.select_one("td.recomm") or minisoup.Node("x")).text()),
                             views=num((tr.select_one("td.count") or minisoup.Node("x")).text()),
@@ -421,6 +427,10 @@ SOURCES = [
      "urls": ["https://www.bobaedream.co.kr/list?code=best"], "parse": _parse_bobae("bobae")},
     {"id": "bobaeacc", "name": "보배드림 사고", "group": "사고·피해",
      "urls": ["https://www.bobaedream.co.kr/list?code=accident"], "parse": _parse_bobae("bobaeacc")},
+    {"id": "bobaefree", "name": "보배드림 자유", "group": "사고·피해",
+     "urls": ["https://www.bobaedream.co.kr/list?code=freeb"], "parse": _parse_bobae("bobaefree")},
+    {"id": "bobaehumor", "name": "보배드림 유머", "group": "남초·이슈",
+     "urls": ["https://www.bobaedream.co.kr/list?code=humor"], "parse": _parse_bobae("bobaehumor")},
     {"id": "blind", "name": "블라인드", "group": "사고·피해",
      "urls": ["https://www.teamblind.com/kr/topics/%ED%86%A0%ED%94%BD-%EB%B2%A0%EC%8A%A4%ED%8A%B8"], "parse": parse_blind},
     {"id": "naverview", "name": "네이버 많이 본 뉴스", "group": "뉴스·청원",
@@ -469,7 +479,7 @@ BODY_SELECTORS = {
     "clien": ["div.post_article"], "mlbpark": ["div#contentDetail", "div.ar_txt"],
     "todayhumor": ["div.viewContent"], "dogdrip": ["div.rd_body", "div.xe_content"],
     "humoruniv": ["div#wrap_copy", "div#cnts"], "slr": ["div#userct"], "bobae": ["div.bodyCont"],
-    "bobaeacc": ["div.bodyCont"], "blind": ["div.article-view-contents", "p.contents-txt"],
+    "bobaeacc": ["div.bodyCont"], "bobaefree": ["div.bodyCont"], "bobaehumor": ["div.bodyCont"], "blind": ["div.article-view-contents", "p.contents-txt"],
     "naverview": ["article#dic_area", "div#dic_area"], "navercmt": ["article#dic_area", "div#dic_area"],
 }
 

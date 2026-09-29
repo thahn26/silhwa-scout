@@ -1,5 +1,5 @@
 #!/bin/bash
-# 실화탐사대 아이템 레이더 실행: 로컬 서버를 켜고 앱 창을 연다.
+# 실화탐사대 실행: 로컬 서버를 켜고 앱 창을 연다.
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PORT="${SS_PORT:-8766}"
 URL="http://127.0.0.1:$PORT/"

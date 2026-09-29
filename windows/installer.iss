@@ -1,7 +1,7 @@
-﻿; 실화탐사대 아이템 레이더 — 윈도우 설치 프로그램 (Inno Setup 6)
+﻿; 실화탐사대(아이템 레이더) — 윈도우 설치 프로그램 (Inno Setup 6)
 ; GitHub Actions(.github/workflows/windows-installer.yml)가 build\python 에 설치 없는 파이썬을 받아 둔 뒤 컴파일한다.
 
-#define AppName "실화탐사대 아이템 레이더"
+#define AppName "실화탐사대"
 #define AppVersion GetEnv("APP_VERSION")
 #if AppVersion == ""
   #define AppVersion "1.0.0"
@@ -19,7 +19,8 @@ DisableDirPage=yes
 ; 관리자 암호 없이 사용자 폴더에 설치한다
 PrivilegesRequired=lowest
 OutputDir=..\dist
-OutputBaseFilename=SilhwaScout_Setup_{#AppVersion}
+; GitHub Releases가 한글 파일 이름을 바꿔 버려서 설치 파일 이름만 영문으로 둔다
+OutputBaseFilename=Silhwatamsadae_Setup_{#AppVersion}
 SetupIconFile=icon.ico
 UninstallDisplayIcon={app}\icon.ico
 UninstallDisplayName={#AppName}
@@ -37,6 +38,12 @@ Name: "korean"; MessagesFile: "compiler:Languages\Korean.isl"
 Name: "english"; MessagesFile: "compiler:Default.isl"
 #endif
 
+[InstallDelete]
+; 예전 이름(1.0.3까지)으로 만든 바로가기를 지운다
+Type: files; Name: "{autodesktop}\실화탐사대 아이템 레이더.lnk"
+Type: files; Name: "{autoprograms}\실화탐사대 아이템 레이더.lnk"
+Type: files; Name: "{autoprograms}\실화탐사대 아이템 레이더 사용안내.lnk"
+
 [Tasks]
 Name: "desktopicon"; Description: "바탕화면에 아이콘 만들기"; GroupDescription: "아이콘:"
 
@@ -45,6 +52,8 @@ Source: "..\build\python\*"; DestDir: "{app}\python"; Flags: recursesubdirs igno
 Source: "..\server.py"; DestDir: "{app}\app"; Flags: ignoreversion
 Source: "..\sources.py"; DestDir: "{app}\app"; Flags: ignoreversion
 Source: "..\minisoup.py"; DestDir: "{app}\app"; Flags: ignoreversion
+Source: "..\updater.py"; DestDir: "{app}\app"; Flags: ignoreversion
+Source: "..\version.txt"; DestDir: "{app}\app"; Flags: ignoreversion
 Source: "..\web\*"; DestDir: "{app}\app\web"; Flags: recursesubdirs ignoreversion
 Source: "launcher.pyw"; DestDir: "{app}\app"; Flags: ignoreversion
 Source: "icon.ico"; DestDir: "{app}"; Flags: ignoreversion

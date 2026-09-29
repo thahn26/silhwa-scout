@@ -52,7 +52,10 @@ function jobsSig(jobs, lc) { return JSON.stringify([lc, ...Object.values(jobs).m
 
 async function poll() {
   try {
-    const { jobs, lastCrawl } = await api("jobs");
+    const { jobs, lastCrawl, version, update } = await api("jobs");
+    // 서버가 새 버전으로 다시 켜졌으면 화면도 새 버전으로 불러온다
+    if (S.version && version && version !== S.version) { location.reload(); return; }
+    if (update) S.update = update;
     const sig = jobsSig(jobs, lastCrawl);
     const running = Object.values(jobs).some((j) => j.running);
     S.jobs = jobs;
@@ -196,8 +199,52 @@ function renderTop() {
   const pill = $("#claudePill");
   const cl = S.claude || {};
   pill.className = "pill " + (cl.loggedIn ? "ok" : "bad");
-  pill.textContent = cl.loggedIn ? "Claude 연결됨" : cl.found === false ? "Claude 없음" : "Claude 로그인 필요";
-  pill.title = cl.loggedIn ? "Claude 요금제로 채점합니다 (클릭: 상태 새로고침)" : "클릭하면 터미널에서 로그인 창을 엽니다";
+  pill.textContent = cl.loggedIn ? "Claude 연결됨" : cl.found === false ? "Claude 연결하기" : "Claude 로그인하기";
+  pill.title = cl.loggedIn ? "Claude 요금제로 채점합니다 (클릭: 상태 새로고침)" : cl.found === false ? "클릭하면 연결 방법을 보여 줍니다" : "클릭하면 로그인 창을 엽니다";
+  renderUpdate();
+  // Claude가 연결 안 돼 있으면 앱을 열 때마다 위쪽에 안내 띠를 띄운다(닫으면 이번 실행 동안만 숨김)
+  const banner = $("#claudeBanner");
+  let hidden = false;
+  try { hidden = sessionStorage.getItem("ss:cbHide") === "1"; } catch {}
+  banner.hidden = !S.claude || cl.loggedIn || hidden;
+  if (!banner.hidden) {
+    banner.innerHTML = cl.found === false
+      ? `<span class="t"><b>AI 채점을 쓰려면 Claude 연결이 필요합니다.</b> 이 PC에서 Claude Code를 찾지 못했어요. 수집·찜·메모는 지금도 됩니다.</span>
+         <button class="btn red sm" id="cbHelp">연결 방법 보기</button><button class="btn sm" id="cbRecheck">다시 확인</button><button class="btn ghost sm" id="cbClose">닫기</button>`
+      : `<span class="t"><b>Claude 로그인이 필요합니다.</b> Claude Code는 찾았어요. Claude Pro/Max 요금제 계정으로 로그인하면 AI 채점을 쓸 수 있습니다.</span>
+         <button class="btn red sm" id="cbLogin">로그인하기</button><button class="btn sm" id="cbRecheck">다시 확인</button><button class="btn ghost sm" id="cbClose">닫기</button>`;
+  }
+}
+
+function renderUpdate() {
+  const b = $("#updBanner");
+  const ready = S.update?.ready;
+  b.hidden = !ready;
+  if (ready) b.innerHTML = `<span class="t"><b style="color:var(--blue)">새 버전(${esc(ready)})이 준비됐습니다.</b> 지금 쓰는 버전은 ${esc(S.version)}입니다. 모은 글·찜·메모는 그대로 남습니다.</span>
+    <button class="btn primary sm" id="applyUpdate">지금 업데이트</button>`;
+}
+
+async function recheckClaude(quiet) {
+  S.claude = await api("claude/status");
+  renderTop();
+  if (S.claude.loggedIn) { if ($("#claudeHelpBox")) $("#modalRoot").innerHTML = ""; if (!quiet) toast("Claude가 연결됐습니다"); }
+  else if (!quiet) toast(S.claude.found === false ? "아직 Claude Code를 찾지 못했습니다" : "Claude Code는 찾았고, 로그인이 필요합니다");
+  return S.claude;
+}
+
+let loginWatch = null;
+async function claudeLogin() {
+  try { await api("claude/login", {}); } catch (e) { toast(e.message); return; }
+  toast(S.platform === "windows" ? "새로 열린 검은 창의 안내대로 로그인해 주세요. 끝나면 자동으로 확인합니다"
+                                 : "터미널 창의 안내대로 로그인해 주세요. 끝나면 자동으로 확인합니다");
+  clearInterval(loginWatch);
+  let n = 0;
+  loginWatch = setInterval(async () => {
+    n++;
+    const st = await recheckClaude(true).catch(() => ({}));
+    if (st.loggedIn) { clearInterval(loginWatch); toast("Claude가 연결됐습니다"); }
+    else if (n >= 36) clearInterval(loginWatch);  // 3분 동안 5초마다 확인
+  }, 5000);
 }
 
 function renderSide() {
@@ -288,7 +335,7 @@ function renderList() {
   const scored = S.posts.filter((p) => p.ai).length;
   const el = $("#list");
   if (!S.posts.length) {
-    el.innerHTML = `<div class="empty"><b>아직 모은 글이 없습니다</b>위쪽 <b style="display:inline">지금 수집</b>을 누르면 커뮤니티 17곳의 인기글을 가져옵니다.</div>`;
+    el.innerHTML = `<div class="empty"><b>아직 모은 글이 없습니다</b>위쪽 <b style="display:inline">지금 수집</b>을 누르면 커뮤니티 19곳의 인기글을 가져옵니다.</div>`;
     return;
   }
   el.innerHTML = `
@@ -460,6 +507,7 @@ function openSettings() {
         <div class="full srcgrid">${S.sources.map((s) => `<label class="toggle"><input type="checkbox" data-en="${s.id}" ${dis.has(s.id) ? "" : "checked"}>${esc(s.name)}</label>`).join("")}</div>
       </div>
       <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:18px">
+        <span class="hint" style="margin-right:auto">버전 ${esc(S.version || "")}</span>
         <button class="btn" id="cancelSet">취소</button><button class="btn primary" id="saveSet">저장</button>
       </div>
     </div></div>`;
@@ -471,15 +519,15 @@ function openClaudeHelp() {
       <li>시작 메뉴에서 <b>PowerShell</b>을 엽니다.</li>
       <li>아래 한 줄을 붙여 넣고 Enter를 누릅니다.<div class="bodytext" style="margin:6px 0;user-select:all">irm https://claude.ai/install.ps1 | iex</div></li>
       <li>'Git for Windows가 필요하다'는 안내가 나오면 <a href="https://git-scm.com/download/win" target="_blank" rel="noopener">git-scm.com</a>에서 설치한 뒤 2번을 다시 합니다.</li>
-      <li>레이더 창에서 오른쪽 위 <b>Claude 없음</b> 버튼을 다시 누르면 <b>Claude 로그인 필요</b>로 바뀝니다. 한 번 더 누르면 로그인 창이 열립니다.</li>` : `
+      <li>설치가 끝나면 아래 <b>다시 확인</b>을 누릅니다. 버튼이 <b>Claude 로그인하기</b>로 바뀌면 눌러서 로그인합니다.</li>` : `
       <li><a href="https://claude.ai/download" target="_blank" rel="noopener">Claude 데스크톱 앱</a>을 설치하고 로그인합니다. (또는 터미널에서 <code>curl -fsSL https://claude.ai/install.sh | bash</code>)</li>
-      <li>레이더 창에서 오른쪽 위 버튼을 다시 누르면 <b>Claude 로그인 필요</b>로 바뀝니다. 한 번 더 누르면 로그인 창이 열립니다.</li>`;
+      <li>설치가 끝나면 아래 <b>다시 확인</b>을 누릅니다. 버튼이 <b>Claude 로그인하기</b>로 바뀌면 눌러서 로그인합니다.</li>`;
   $("#modalRoot").innerHTML = `
-    <div class="modal"><div class="box md">
+    <div class="modal"><div class="box md" id="claudeHelpBox">
       <h3>AI 채점을 쓰려면 Claude Code가 필요합니다</h3>
       <p>수집·예비 점수·찜·메모는 지금도 됩니다. AI 채점, 심층 분석, 보고서는 이 PC에 Claude Code를 설치하고 <b>Claude Pro/Max 요금제</b> 계정으로 로그인해야 쓸 수 있습니다.</p>
       <ol>${steps}</ol>
-      <div style="display:flex;justify-content:flex-end;margin-top:14px"><button class="btn primary" id="cancelSet">닫기</button></div>
+      <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px"><button class="btn" id="claudeRecheck">다시 확인</button><button class="btn primary" id="cancelSet">닫기</button></div>
     </div></div>`;
 }
 
@@ -545,12 +593,22 @@ document.addEventListener("click", async (e) => {
       if (q === null) return;
       return startJob("websearch", { query: q });
     }
-    case "claudePill":
-      if (S.claude?.loggedIn || S.claude?.found === false) { S.claude = await api("claude/status"); renderTop(); if (S.claude.found === false) openClaudeHelp(); return; }
-      await api("claude/login", {});
-      toast("터미널에서 로그인을 마친 뒤 이 버튼을 다시 눌러 주세요");
-      setTimeout(async () => { S.claude = await api("claude/status"); renderTop(); }, 20000);
+    case "claudePill": {
+      const st = await recheckClaude(true);
+      if (st.loggedIn) toast("Claude가 연결되어 있습니다");
+      else if (st.found === false) openClaudeHelp();
+      else claudeLogin();
       return;
+    }
+    case "applyUpdate":
+      t.disabled = true; t.innerHTML = `<i class="spin"></i> 업데이트 중`;
+      try { await api("update/apply", {}); toast("새 버전으로 다시 켜는 중입니다. 잠시 후 화면이 새로고침됩니다"); schedulePoll(2000); }
+      catch (err) { toast(err.message); t.disabled = false; t.textContent = "지금 업데이트"; }
+      return;
+    case "cbHelp": return openClaudeHelp();
+    case "cbLogin": return claudeLogin();
+    case "cbRecheck": case "claudeRecheck": return recheckClaude(false);
+    case "cbClose": try { sessionStorage.setItem("ss:cbHide", "1"); } catch {} renderTop(); return;
     case "btnSettings": return openSettings();
     case "cancelSet": $("#modalRoot").innerHTML = ""; return;
     case "saveSet": return saveSettings();
