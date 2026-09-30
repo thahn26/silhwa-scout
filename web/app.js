@@ -21,7 +21,7 @@ const UI = Object.assign({
 UI.limit = PAGE;
 
 function load(k) { try { return JSON.parse(localStorage.getItem("ss:" + k) || "{}"); } catch { return {}; } }
-function persist() { try { const { limit, report, ...rest } = UI; localStorage.setItem("ss:ui", JSON.stringify(rest)); } catch {} }
+function persist() { try { const { limit, report, snsView, ...rest } = UI; localStorage.setItem("ss:ui", JSON.stringify(rest)); } catch {} }
 
 async function api(path, body) {
   const r = await fetch("/api/" + path, body === undefined ? {} : {
@@ -44,19 +44,22 @@ async function refresh() {
   S = await api("state");
   byId = new Map(S.posts.map((p) => [p.id, p]));
   for (const [id, s] of Object.entries(S.saved)) if (!byId.has(id) && s.post) byId.set(id, s.post);
-  lastJobsSig = jobsSig(S.jobs, S.config.lastCrawl);
+  lastJobsSig = jobsSig(S.jobs, S.config.lastCrawl, lastChangedAt);
   render();
+  checkSnsUpdate();
 }
 
-function jobsSig(jobs, lc) { return JSON.stringify([lc, ...Object.values(jobs).map((j) => [j.running, j.finishedAt])]); }
+let lastChangedAt = 0;
+function jobsSig(jobs, lc, ch) { return JSON.stringify([lc, ch, ...Object.values(jobs).map((j) => [j.running, j.finishedAt])]); }
 
 async function poll() {
   try {
-    const { jobs, lastCrawl, version, update } = await api("jobs");
+    const { jobs, lastCrawl, version, update, changedAt } = await api("jobs");
+    lastChangedAt = changedAt || 0;
     // 서버가 새 버전으로 다시 켜졌으면 화면도 새 버전으로 불러온다
     if (S.version && version && version !== S.version) { location.reload(); return; }
     if (update) S.update = update;
-    const sig = jobsSig(jobs, lastCrawl);
+    const sig = jobsSig(jobs, lastCrawl, lastChangedAt);
     const running = Object.values(jobs).some((j) => j.running);
     S.jobs = jobs;
     if (sig !== lastJobsSig) {
@@ -115,7 +118,8 @@ function filtered() {
   const q = UI.q.trim().toLowerCase();
   let list = S.posts.filter((p) => {
     const g = srcInfo(p.source).group;
-    if (UI.hideGroups.includes(g) || UI.hideSrc.includes(p.source)) return false;
+    if (UI.snsView) { if (!SNS.includes(p.source)) return false; }
+    else if (UI.hideGroups.includes(g) || UI.hideSrc.includes(p.source)) return false;
     if (UI.range && now - Math.max(when(p), p.lastSeen || 0) > UI.range * 3600) return false;
     if (!UI.showExcluded && excludedWhy(p)) return false;
     if (UI.onlyFirst && !FIRST_HAND.includes(judge(p)?.writer)) return false;
@@ -135,7 +139,7 @@ function filtered() {
     hot: (a, b) => reach(b) - reach(a) || (b.comments ?? 0) - (a.comments ?? 0),
     new: (a, b) => when(b) - when(a),
   };
-  list.sort(sorters[UI.sort] || sorters.ai);
+  list.sort(UI.snsView ? sorters.new : (sorters[UI.sort] || sorters.ai));
   return cluster(list);
 }
 
@@ -226,6 +230,32 @@ function renderUpdate() {
     <button class="btn primary sm" id="applyUpdate">지금 업데이트</button>`;
 }
 
+const SNS = ["threads", "instagram"];
+const allSourceIds = () => [...new Set([...S.sources.map((s) => s.id), ...S.posts.map((p) => p.source)])];
+const sourcesInGroup = (g) => allSourceIds().filter((id) => srcInfo(id).group === g);
+
+// 스레드·인스타그램 새 글 알림: 마지막으로 확인한 뒤 새로 들어온 글(뉴스 퍼옴·결론 난 사건·광고 제외)이 있으면 창을 띄운다
+function snsLatest() { return Math.max(0, ...S.posts.filter((p) => SNS.includes(p.source)).map((p) => p.firstSeen || 0)); }
+function markSnsSeen() { try { localStorage.setItem("ss:snsSeen", String(snsLatest())); } catch {} }
+function checkSnsUpdate() {
+  let seen = null;
+  try { seen = localStorage.getItem("ss:snsSeen"); } catch { return; }
+  if (seen === null) { markSnsSeen(); return; }  // 처음 켰을 때는 기준만 잡는다
+  const fresh = S.posts.filter((p) => SNS.includes(p.source) && (p.firstSeen || 0) > +seen && !excludedWhy(p)
+    && !(judge(p)?.flags || []).includes("광고"));
+  if (!fresh.length || $("#modalRoot").innerHTML.trim()) return;
+  const th = fresh.filter((p) => p.source === "threads").length, ig = fresh.length - th;
+  $("#modalRoot").innerHTML = `
+    <div class="modal"><div class="box" style="width:min(420px,100%);text-align:center;padding:26px 24px">
+      <div style="font-size:30px;line-height:1">🔔</div>
+      <h3 style="margin:10px 0 6px">스레드, 인스타그램 글이 업데이트 되었습니다</h3>
+      <p class="hint" style="margin:0 0 18px">새 글 ${fresh.length}건 (스레드 ${th} · 인스타그램 ${ig})</p>
+      <div style="display:flex;gap:8px;justify-content:center">
+        <button class="btn red" id="snsNow">지금 볼랭</button><button class="btn" id="snsLater">나중에 볼게~</button>
+      </div>
+    </div></div>`;
+}
+
 async function recheckClaude(quiet) {
   S.claude = await api("claude/status");
   renderTop();
@@ -273,10 +303,10 @@ function renderSide() {
     <label class="toggle" title="뉴스를 퍼 온 글, 이미 구속·수사 중인 사건"><input type="checkbox" id="showExcluded" ${UI.showExcluded ? "checked" : ""}> 제외된 글도 보기 <span class="hint">(${excludedCount.toLocaleString()}건)</span></label>
     <h4>분류 ${UI.cats.length ? `<a id="catClear">전체</a>` : ""}</h4>
     <div class="chips">${cats.map((c) => `<button class="chip ${UI.cats.includes(c) ? "on" : ""}" data-cat="${esc(c)}">${esc(c)}</button>`).join("")}</div>
-    <h4>커뮤니티 ${UI.hideGroups.length || UI.hideSrc.length ? `<a id="srcClear">모두 보기</a>` : ""}</h4>
+    <h4>커뮤니티 <span><a id="srcAll">전체 선택</a> · <a id="srcNone">전체 해제</a></span></h4>
     ${GROUPS.filter((g) => groups[g]).map((g) => `
       <div class="srcgroup">
-        <label><input type="checkbox" data-group="${esc(g)}" ${UI.hideGroups.includes(g) ? "" : "checked"}><i class="gdot" style="background:${GROUP_COLOR[g]}"></i>${esc(g)}</label>
+        <label><input type="checkbox" data-group="${esc(g)}" ${!UI.hideGroups.includes(g) && groups[g].some((s) => !UI.hideSrc.includes(s.id)) ? "checked" : ""}><i class="gdot" style="background:${GROUP_COLOR[g]}"></i>${esc(g)}</label>
         ${groups[g].map((s) => `<label class="src"><input type="checkbox" data-src="${s.id}" ${UI.hideSrc.includes(s.id) ? "" : "checked"}>${esc(s.name)}
           ${disabled.includes(s.id) ? `<span class="n">수집 꺼짐</span>` : s.error ? `<span class="err" title="${esc(s.error)}">실패</span>` : `<span class="n">${bySrc[s.id] || 0}</span>`}</label>`).join("")}
       </div>`).join("")}
@@ -349,7 +379,8 @@ function renderList() {
     return;
   }
   el.innerHTML = `
-    <div class="listhead"><h2>아이템 후보</h2><span class="sub">${list.length.toLocaleString()}건 · 전체 ${S.posts.length.toLocaleString()}건 중 AI 채점 ${scored.toLocaleString()}건</span></div>
+    ${UI.snsView ? `<div class="bar" style="background:var(--blue-soft)"><b style="flex:1">스레드·인스타그램 글만 최신순으로 보는 중 · ${list.length.toLocaleString()}건</b><button class="btn sm" id="snsExit">전체 보기로 돌아가기</button></div>` : ""}
+    <div class="listhead"><h2>${UI.snsView ? "스레드·인스타그램" : "아이템 후보"}</h2><span class="sub">${list.length.toLocaleString()}건 · 전체 ${S.posts.length.toLocaleString()}건 중 AI 채점 ${scored.toLocaleString()}건</span></div>
     ${list.length ? list.slice(0, UI.limit).map(card).join("") : `<div class="empty"><b>조건에 맞는 글이 없습니다</b>기간을 늘리거나 최소 점수·분류 필터를 풀어 보세요.</div>`}
     ${list.length > UI.limit ? `<div class="more"><button class="btn" id="moreBtn">더 보기 (${(list.length - UI.limit).toLocaleString()}건 남음)</button></div>` : ""}`;
 }
@@ -645,7 +676,11 @@ document.addEventListener("click", async (e) => {
     case "closeDrawer": return closeDrawer();
     case "moreBtn": UI.limit += PAGE; renderList(); return;
     case "catClear": UI.cats = []; persist(); render(); return;
-    case "srcClear": UI.hideGroups = []; UI.hideSrc = []; persist(); render(); return;
+    case "srcAll": UI.hideGroups = []; UI.hideSrc = []; UI.limit = PAGE; persist(); render(); return;
+    case "srcNone": UI.hideGroups = []; UI.hideSrc = allSourceIds(); UI.limit = PAGE; persist(); render(); return;
+    case "snsExit": UI.snsView = false; UI.limit = PAGE; render(); return;
+    case "snsNow": markSnsSeen(); $("#modalRoot").innerHTML = ""; closeDrawer(); UI.tab = "radar"; UI.snsView = true; UI.limit = PAGE; render(); window.scrollTo(0, 0); return;
+    case "snsLater": markSnsSeen(); $("#modalRoot").innerHTML = ""; return;
     case "analyze": {
       const id = drawerId;
       t.disabled = true; t.innerHTML = `<i class="spin"></i> 분석 중 (1~2분)`;
@@ -695,8 +730,18 @@ document.addEventListener("change", async (e) => {
   if (t.id === "hideFlags") { UI.hideFlags = t.checked; persist(); renderList(); return; }
   if (t.id === "onlyFirst") { UI.onlyFirst = t.checked; UI.limit = PAGE; persist(); renderList(); return; }
   if (t.id === "showExcluded") { UI.showExcluded = t.checked; UI.limit = PAGE; persist(); renderList(); return; }
-  if (t.dataset.group) { const g = t.dataset.group; UI.hideGroups = t.checked ? UI.hideGroups.filter((x) => x !== g) : [...UI.hideGroups, g]; persist(); render(); return; }
-  if (t.dataset.src) { const s = t.dataset.src; UI.hideSrc = t.checked ? UI.hideSrc.filter((x) => x !== s) : [...UI.hideSrc, s]; persist(); render(); return; }
+  if (t.dataset.group) {
+    const g = t.dataset.group, ids = sourcesInGroup(g);
+    UI.hideGroups = UI.hideGroups.filter((x) => x !== g);
+    UI.hideSrc = t.checked ? UI.hideSrc.filter((x) => !ids.includes(x)) : [...new Set([...UI.hideSrc, ...ids])];
+    UI.limit = PAGE; persist(); render(); return;
+  }
+  if (t.dataset.src) {
+    const s = t.dataset.src;
+    UI.hideSrc = t.checked ? UI.hideSrc.filter((x) => x !== s) : [...UI.hideSrc, s];
+    if (t.checked) UI.hideGroups = UI.hideGroups.filter((x) => x !== srcInfo(s).group);
+    UI.limit = PAGE; persist(); render(); return;
+  }
   if (t.dataset.pick) { t.checked ? reportPick.add(t.dataset.pick) : reportPick.delete(t.dataset.pick); const b = $("#makeReport"); b.disabled = !reportPick.size; b.textContent = "보고서 만들기" + (reportPick.size ? ` (${reportPick.size})` : ""); return; }
   if (t.dataset.status) {
     const id = t.dataset.status;

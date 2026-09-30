@@ -43,6 +43,7 @@ except OSError:
 LAUNCHER = os.environ.get("SS_LAUNCHER", "")
 update_info = {"ready": "", "checkedAt": 0, "error": ""}
 # 로그인 수집(스레드·인스타그램) 공유 목록: 대표 컴퓨터(토큰 있음)가 GitHub feed 브랜치에 올리고, 나머지는 받아 온다
+changed = {"at": time.time()}  # 글이 새로 들어온 시각(수집·로그인 수집·공유 목록 받기) → 화면이 이걸 보고 새로고침한다
 feed_info = {"role": "", "lastPublish": 0, "lastFetch": 0, "count": 0, "error": ""}
 FEED_FIELDS = ("source", "title", "url", "excerpt", "bodySnippet", "body", "views", "likes", "comments", "timeText", "ts",
                "category", "query")
@@ -876,7 +877,7 @@ class Handler(SimpleHTTPRequestHandler):
                     "claude": claude_status()})
         if path == "/api/jobs":
             with lock:
-                return self._json(200, {"jobs": jobs, "lastCrawl": config.get("lastCrawl"),
+                return self._json(200, {"jobs": jobs, "lastCrawl": config.get("lastCrawl"), "changedAt": changed["at"],
                                         "version": VERSION, "update": update_info})
         if path == "/api/import-key":  # 이 컴퓨터 안에서만(스케줄 작업이 읽는다)
             return self._json(200, {"key": IMPORT_KEY})
@@ -980,6 +981,8 @@ class Handler(SimpleHTTPRequestHandler):
                         added += 1
                     ids.append(pid)
             save_posts()
+            if added:
+                changed["at"] = time.time()
             if config.get("feedToken"):
                 threading.Thread(target=publish_feed, daemon=True).start()
             todo = [i for i in ids if (posts[i].get("ai") or {}).get("v") != AI_VERSION]
@@ -1164,6 +1167,7 @@ def consume_feed():
                 added += 1
         if added:
             save_posts()
+            changed["at"] = time.time()
         feed_info.update(role="consumer", lastFetch=now, count=len(data.get("posts") or []), error="")
     except Exception as e:  # noqa: BLE001
         feed_info.update(role="consumer", lastFetch=now, error=str(e)[:200])
