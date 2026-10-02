@@ -45,6 +45,9 @@ update_info = {"ready": "", "checkedAt": 0, "error": ""}
 # 로그인 수집(스레드·인스타그램) 공유 목록: 대표 컴퓨터(토큰 있음)가 GitHub feed 브랜치에 올리고, 나머지는 받아 온다
 changed = {"at": time.time()}  # 글이 새로 들어온 시각(수집·로그인 수집·공유 목록 받기) → 화면이 이걸 보고 새로고침한다
 feed_info = {"role": "", "lastPublish": 0, "lastFetch": 0, "count": 0, "error": ""}
+sync_info = {"lastSync": 0, "error": "", "count": 0}
+sync_wake = threading.Event()
+SYNC_STATE = os.path.join(DATA, "sync_state.json")  # 찜을 푼 기록(휴대폰에도 풀리게)
 FEED_FIELDS = ("source", "title", "url", "excerpt", "bodySnippet", "body", "views", "likes", "comments", "timeText", "ts",
                "category", "query")
 POSTS = os.path.join(DATA, "posts.json")
@@ -132,6 +135,7 @@ DEFAULT_CONFIG = {
     "disabled": [],          # 끈 커뮤니티 id
     "feedToken": "",         # 윈도우와 공유용 GitHub 토큰(이 컴퓨터가 로그인 수집 대표일 때만)
     "feedRepo": "thahn26/silhwa-scout",
+    "syncRepo": "thahn26/silhwa-scout-sync",  # 찜·메모를 휴대폰과 주고받는 비공개 저장소(메모는 공개 저장소에 올리지 않는다)
     "lastCrawl": 0,
 }
 
@@ -159,6 +163,13 @@ def write_json(fn, data):
 posts = read_json(POSTS, {})
 saved = read_json(SAVED, {})
 config = dict(DEFAULT_CONFIG, **read_json(CONFIG, {}))
+for _p in posts.values():  # 따로 있던 '아프니까 사장이다'는 '네이버 카페'로 합쳤다
+    if _p.get("source") == "sajang":
+        _p["source"] = "navercafe"
+        _p["category"] = "아프니까 사장이다 · " + (_p.get("category") or "")
+for _s in saved.values():
+    if (_s.get("post") or {}).get("source") == "sajang":
+        _s["post"]["source"] = "navercafe"
 if config.get("criteria") == OLD_DEFAULT_CRITERIA:  # 기본 기준을 그대로 쓰던 경우 새 기본값으로 바꾼다(직접 고친 기준은 그대로)
     config["criteria"] = DEFAULT_CRITERIA
 jobs = {k: {"running": False, "startedAt": 0, "finishedAt": 0, "message": "", "progress": ""}
@@ -351,6 +362,7 @@ def rule_body_pass(limit=40):
         cutoff = time.time() - 2 * 86400
         pool = [p for p in posts.values() if not p.get("ai") and not p.get("bodySnippet") and p["source"] in sources.BY_ID
                 and p.get("lastSeen", 0) >= cutoff and not (p.get("rule") or {}).get("excluded")
+                and not p["url"].startswith(sources.NOBODY_URLS)
                 and source_meta(p["source"])[1] != "뉴스·청원"]  # 기사는 글쓴이를 가릴 필요가 없다
         pool.sort(key=lambda p: (p.get("rule") or {}).get("score", 0), reverse=True)
         picked, cnt = [], {}
@@ -406,6 +418,64 @@ def prescore(batch):
             rule_classify(p)
 
 
+# ── 스레드 글타래 ─────────────────────────────────────────────
+# 스레드 검색에는 글쓴이가 이어 쓴 타래의 중간 글이 걸리곤 한다(첫 글엔 해시태그만 있고 '도와주세요' 같은 말은 뒤에 있을 때).
+# 그러면 반응이 큰 첫 글을 놓치므로, 새로 들어온 스레드 글은 글 페이지를 열어 타래의 첫 글과 전체 내용으로 바꾼다.
+THREAD_HEADS = os.path.join(DATA, "thread_heads.json")  # {중간 글 주소: 첫 글 주소}
+thread_heads = read_json(THREAD_HEADS, {})
+_thread_lock = threading.Lock()
+
+
+def expand_threads(ids=None, limit=60):
+    with _thread_lock:
+        with lock:
+            cut = time.time() - 3 * 86400
+            todo = [p for p in (posts.get(i) for i in ids) if p] if ids else list(posts.values())
+            todo = [p for p in todo if p.get("source") == "threads" and not p.get("threadChecked")
+                    and p.get("lastSeen", 0) >= cut][:limit]
+        changed_any = False
+        for p in todo:
+            try:
+                r = sources.threads_thread(p["url"])
+            except Exception:  # noqa: BLE001
+                r = None
+            time.sleep(1.0)
+            with lock:
+                p["threadChecked"] = True
+                if not r:
+                    continue
+                head = r["head"]
+                full = {"excerpt": r["text"][:200], "bodySnippet": r["text"][:800], "body": r["text"][:3000]}
+                if r["isHead"]:
+                    p.update(full, likes=head["likes"] if head["likes"] is not None else p.get("likes"),
+                             comments=head["comments"] if head["comments"] is not None else p.get("comments"))
+                    if re.fullmatch(r"(#\S+\s*)+", p.get("title") or ""):
+                        p["title"] = head["title"]
+                    rule_classify(p)
+                    changed_any = True
+                    continue
+                hid = post_id(head["url"])
+                thread_heads[p["url"]] = head["url"]
+                if hid in posts:
+                    posts[hid].update(full, lastSeen=max(posts[hid].get("lastSeen", 0), p.get("lastSeen", 0)),
+                                      likes=head["likes"], comments=head["comments"], threadChecked=True)
+                    rule_classify(posts[hid])
+                else:
+                    head.update(full, id=hid, firstSeen=p.get("firstSeen") or time.time(), lastSeen=p.get("lastSeen") or time.time(),
+                                seenCount=1, web=True, rank=None, threadChecked=True, query=p.get("query") or "",
+                                **{k: p[k] for k in ("via", "shared") if p.get(k)})
+                    prescore([head])
+                    posts[hid] = head
+                if p["id"] not in saved:  # 중간 글은 첫 글로 대신한다
+                    posts.pop(p["id"], None)
+                changed_any = True
+        if changed_any:
+            write_json(THREAD_HEADS, thread_heads)
+            save_posts()
+            changed["at"] = time.time()
+        return changed_any
+
+
 # ── 수집 ────────────────────────────────────────────────────
 
 def set_job(name, **kw):
@@ -425,6 +495,7 @@ def crawl_job():
         for src, (items, err) in results:
             source_status[src["id"]] = {"count": len(items), "error": err, "at": now}
             batch.extend(items)
+        batch = [it for it in batch if it["url"] not in thread_heads]  # 이미 첫 글로 바꾼 스레드 중간 글
         prescore(batch)
         with lock:
             for it in batch:
@@ -449,6 +520,8 @@ def crawl_job():
             config["lastCrawl"] = now
         save_posts()
         save_config()
+        set_job("crawl", progress="스레드 글타래 확인 중")
+        expand_threads(new_ids)
         fails = [sources.BY_ID[k]["name"] for k, v in source_status.items() if v.get("error")]
         msg = f"{total}건 확인, 새 글 {len(new_ids)}건" + (f" · 실패: {', '.join(fails)}" if fails else "")
         set_job("crawl", running=False, finishedAt=time.time(), message=msg, progress="")
@@ -868,9 +941,11 @@ class Handler(SimpleHTTPRequestHandler):
             with lock:
                 light = [{k: v for k, v in p.items() if k not in ("body", "bodySnippet")} for p in posts.values()]
                 return self._json(200, {
-                    "posts": light, "saved": saved, "config": public_config(), "jobs": jobs, "feed": feed_info, "categories": CATEGORIES,
+                    "posts": light, "saved": saved, "config": public_config(), "jobs": jobs, "feed": feed_info, "sync": sync_info,
+                    "mobileUrl": mobile_url(), "categories": CATEGORIES,
                     "defaultCriteria": DEFAULT_CRITERIA, "filterRules": FILTER_RULES, "aiVersion": AI_VERSION,
-                    "platform": "windows" if IS_WIN else "mac", "version": VERSION, "update": update_info,
+                    "platform": "windows" if IS_WIN else "mac",
+                    "noScore": IS_WIN or bool(os.environ.get("SS_NO_CLAUDE")),  # 윈도우(와 그 미리보기)는 점수 숫자를 안 보여 준다 "version": VERSION, "update": update_info,
                     "sources": [{"id": s["id"], "name": s["name"], "group": s["group"], "url": s["urls"][0],
                                  **source_status.get(s["id"], {})} for s in sources.SOURCES],
                     "webSources": {k: {"name": v[0], "group": v[1]} for k, v in sources.WEB_SOURCES.items()},
@@ -967,6 +1042,11 @@ class Handler(SimpleHTTPRequestHandler):
                       "ts": r.get("ts") or sources.parse_time(str(r.get("timeText") or "")),
                       "category": str(r.get("author") or ""), "rank": None, "web": True,
                       "query": str(r.get("query") or ""), "via": "browser" if r.get("via", "browser") == "browser" else "manual"}
+                if url in thread_heads:  # 이미 첫 글로 바꾼 중간 글 → 첫 글만 최근 본 것으로
+                    hp = posts.get(post_id(thread_heads[url]))
+                    if hp:
+                        hp["lastSeen"] = now
+                    continue
                 batch.append(it)
             prescore(batch)
             with lock:
@@ -983,18 +1063,29 @@ class Handler(SimpleHTTPRequestHandler):
             save_posts()
             if added:
                 changed["at"] = time.time()
-            if config.get("feedToken"):
-                threading.Thread(target=publish_feed, daemon=True).start()
-            todo = [i for i in ids if (posts[i].get("ai") or {}).get("v") != AI_VERSION]
-            # 많이 한꺼번에 들어오면(로그인 수집) 여기서 다 채점하지 않고, 평소 자동 채점이 예비 점수 상위부터 고른다
-            started = bool(todo) and len(todo) <= 15 and claude_ready() and start_job("score", score_job, todo)
-            return self._json(200, {"received": len(batch), "added": added, "scoring": started,
-                                    "note": "" if started or not todo else "채점이 이미 진행 중이거나 Claude 연결 전이라 다음 채점 때 처리됩니다"})
+            def after_import():
+                # 스레드 중간 글은 첫 글로 바꾼 뒤에 공유·채점한다
+                expand_threads(ids)
+                if config.get("feedToken"):
+                    publish_feed()
+                todo = [i for i in ids if i in posts and (posts[i].get("ai") or {}).get("v") != AI_VERSION]
+                todo += [post_id(thread_heads[posts_url]) for posts_url in urls if posts_url in thread_heads
+                         and post_id(thread_heads[posts_url]) in posts
+                         and (posts[post_id(thread_heads[posts_url])].get("ai") or {}).get("v") != AI_VERSION]
+                todo = list(dict.fromkeys(todo))
+                # 많이 한꺼번에 들어오면(로그인 수집) 여기서 다 채점하지 않고, 평소 자동 채점이 예비 점수 상위부터 고른다
+                if todo and len(todo) <= 15 and claude_ready():
+                    start_job("score", score_job, todo)
+            urls = [it["url"] for it in batch]
+            threading.Thread(target=after_import, daemon=True).start()
+            return self._json(200, {"received": len(batch), "added": added,
+                                    "note": "스레드 글타래를 확인한 뒤 공유·채점합니다"})
         if path == "/api/save":
             pid = body.get("id")
             with lock:
                 if body.get("saved") is False:
-                    saved.pop(pid, None)
+                    if saved.pop(pid, None) is not None:
+                        tomb_add(pid)
                 else:
                     cur = saved.get(pid) or {"savedAt": time.time(), "memo": "", "status": "검토중"}
                     for k in ("memo", "status"):
@@ -1002,8 +1093,10 @@ class Handler(SimpleHTTPRequestHandler):
                             cur[k] = str(body[k])
                     if pid in posts:
                         cur["post"] = {k: v for k, v in posts[pid].items() if k not in ("body", "bodySnippet")}
+                    cur["updatedAt"] = time.time()
                     saved[pid] = cur
             save_saved()
+            sync_wake.set()
             return self._json(200, saved.get(pid) or {})
         if path == "/api/settings":
             with lock:
@@ -1019,11 +1112,16 @@ class Handler(SimpleHTTPRequestHandler):
                     config["criteria"] = str(body["criteria"] or "").strip() or DEFAULT_CRITERIA
                 if "feedToken" in body:
                     config["feedToken"] = str(body.get("feedToken") or "").strip()
+                if re.fullmatch(r"[\w.-]+/[\w.-]+", str(body.get("syncRepo") or "")):
+                    config["syncRepo"] = body["syncRepo"]
                 if isinstance(body.get("disabled"), list):
                     config["disabled"] = [str(x) for x in body["disabled"]]
             save_config()
             if "feedToken" in body:
                 threading.Thread(target=publish_feed if config.get("feedToken") else consume_feed, daemon=True).start()
+            if "feedToken" in body or "syncRepo" in body:
+                sync_info.update(error="", lastSync=0)
+                sync_wake.set()
             return self._json(200, public_config())
         if path == "/api/body":
             p = posts.get(body.get("id")) or (saved.get(body.get("id")) or {}).get("post")
@@ -1056,7 +1154,9 @@ class Handler(SimpleHTTPRequestHandler):
             save_posts()
             if pid in saved:
                 saved[pid]["analysis"] = p["analysis"]
+                saved[pid]["updatedAt"] = time.time()
                 save_saved()
+                sync_wake.set()
             return self._json(200, p["analysis"])
         if path == "/api/report":
             entries = []
@@ -1098,10 +1198,10 @@ def feed_url():
     return os.environ.get("SS_FEED_URL") or f"https://raw.githubusercontent.com/{config.get('feedRepo')}/feed/feed.json"
 
 
-def gh(method, path, body=None):
+def gh(method, path, body=None, repo=None):
     import urllib.request
     import urllib.error
-    req = urllib.request.Request("https://api.github.com/repos/" + config.get("feedRepo") + path, method=method,
+    req = urllib.request.Request("https://api.github.com/repos/" + (repo or config.get("feedRepo")) + path, method=method,
                                  data=None if body is None else json.dumps(body).encode("utf-8"),
                                  headers={"Authorization": "Bearer " + config.get("feedToken", ""),
                                           "Accept": "application/vnd.github+json", "User-Agent": "SilhwaScout",
@@ -1113,35 +1213,221 @@ def gh(method, path, body=None):
         return e.code, {}
 
 
-def publish_feed():
-    """로그인해서 모은 SNS 글(최근 3일)을 GitHub feed 브랜치의 feed.json으로 올린다."""
+MOBILE = os.path.join(WEB, "mobile")
+MOBILE_KEEP_DAYS = 3
+_mobile_hash = {"v": ""}
+_publish_lock = threading.Lock()
+
+
+def mobile_url():
+    owner, _, name = (config.get("feedRepo") or "").partition("/")
+    return f"https://{owner.lower()}.github.io/{name}/" if owner and name else ""
+
+
+def mobile_feed(now):
+    """휴대폰 앱에 보여 줄 목록: 최근 3일 글 중 제외되지 않은 것을 점수 순으로(판단은 AI가 있으면 AI, 없으면 자동)."""
+    cut = now - MOBILE_KEEP_DAYS * 86400
+    out = []
+    for p in posts.values():
+        if max(p.get("ts") or p.get("firstSeen") or 0, p.get("lastSeen") or 0) < cut:
+            continue
+        j = p["ai"] if (p.get("ai") or {}).get("v") else (p.get("rule") or p.get("ai") or {})
+        if j.get("excluded") or (not j and p.get("newsLike")):
+            continue
+        name, group = source_meta(p["source"])
+        out.append({"id": p.get("id") or post_id(p["url"]), "source": p["source"], "sourceName": name, "group": group,
+                    "title": p.get("title"), "url": p.get("url"), "excerpt": (p.get("excerpt") or "")[:200],
+                    "snippet": (p.get("bodySnippet") or p.get("body") or "")[:600],
+                    "views": p.get("views"), "likes": p.get("likes"), "comments": p.get("comments"),
+                    "timeText": p.get("timeText") or "", "ts": p.get("ts") or 0, "firstSeen": p.get("firstSeen") or 0,
+                    "score": j.get("score", p.get("pre", 0)), "judge": "AI" if (p.get("ai") or {}).get("v") else ("자동" if j else "예비"),
+                    "category": j.get("category") or "", "writer": j.get("writer") or "", "flags": j.get("flags") or [],
+                    "reason": j.get("reason") or "", "angle": j.get("angle") or "", "sns": group == "SNS"})
+    # AI 판단을 앞세운다(자동 점수는 후하게 나와서 0.75배로 견준다)
+    out.sort(key=lambda x: x["score"] * (1 if x["judge"] == "AI" else 0.75), reverse=True)
+    # 연예·정치·유머 같은 성격이면서 점수가 낮은 글은 뺀다(노트북 화면 기본값과 같게)
+    out = [x for x in out if not (set(x["flags"]) & {"연예", "정치", "유머", "해외", "광고"} and x["score"] < 60)]
+    top, cnt = [], {}
+    for x in out:  # 한 커뮤니티가 목록을 독차지하지 않게 곳마다 30개까지
+        if len(top) >= 180:
+            break
+        if x["sns"] or cnt.get(x["source"], 0) < 30:
+            top.append(x)
+            cnt[x["source"]] = cnt.get(x["source"], 0) + 1
+    ids = {x["id"] for x in top}
+    top += [x for x in out if x["sns"] and x["id"] not in ids][:80]
+    # 블라인드 탭용: 추천 목록 몫(30개)을 넘는 블라인드 글도 더 싣는다(추천 탭에는 안 보임)
+    top += [dict(x, extra=True) for x in out if x["source"] == "blind" and x["id"] not in ids][:60]
+    return top
+
+
+def blob_sha(data):
+    return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
+
+
+def commit_files(branch, files, message):
+    """여러 파일을 한 번의 커밋으로 올린다(바뀐 파일이 없으면 올리지 않는다)."""
     import base64
+    st, ref = gh("GET", "/git/ref/heads/" + branch)
+    if st == 404:
+        st, main = gh("GET", "/git/ref/heads/main")
+        if st != 200:
+            raise RuntimeError(f"저장소를 읽지 못했습니다({st}) — 토큰 권한을 확인해 주세요")
+        gh("POST", "/git/refs", {"ref": "refs/heads/" + branch, "sha": main["object"]["sha"]})
+        st, ref = gh("GET", "/git/ref/heads/" + branch)
+    if st != 200:
+        raise RuntimeError(f"저장소에 접근하지 못했습니다({st}) — 토큰을 확인해 주세요")
+    head = ref["object"]["sha"]
+    st, commit = gh("GET", "/git/commits/" + head)
+    st, tree = gh("GET", f"/git/trees/{commit['tree']['sha']}?recursive=1")
+    have = {t["path"]: t["sha"] for t in tree.get("tree", []) if t.get("type") == "blob"}
+    entries = []
+    for path, data in files.items():
+        if have.get(path) == blob_sha(data):
+            continue
+        st, blob = gh("POST", "/git/blobs", {"content": base64.b64encode(data).decode(), "encoding": "base64"})
+        if st != 201:
+            raise RuntimeError(f"올리지 못했습니다({st}) — 토큰에 Contents 쓰기 권한이 있는지 확인해 주세요")
+        entries.append({"path": path, "mode": "100644", "type": "blob", "sha": blob["sha"]})
+    if not entries:
+        return False
+    st, nt = gh("POST", "/git/trees", {"base_tree": commit["tree"]["sha"], "tree": entries})
+    st, nc = gh("POST", "/git/commits", {"message": message, "tree": nt["sha"], "parents": [head]})
+    st, _ = gh("PATCH", "/git/refs/heads/" + branch, {"sha": nc["sha"]})
+    if st != 200:
+        raise RuntimeError(f"올리지 못했습니다({st})")
+    return True
+
+
+def publish_feed(force=False):
+    """로그인해서 모은 SNS 글(최근 3일)은 feed.json(윈도우용)으로, 휴대폰 앱과 그 목록은 docs/ 아래로 GitHub feed 브랜치에 올린다."""
     if not config.get("feedToken"):
         return
+    with _publish_lock:  # 로그인 수집 직후와 정기 올리기가 겹치지 않게
+        _publish(force)
+
+
+def _publish(force):
     now = time.time()
     with lock:
         items = [{k: p.get(k) for k in FEED_FIELDS} for p in posts.values()
                  if p.get("via") == "browser" and p.get("lastSeen", 0) >= now - 3 * 86400]
-    data = json.dumps({"version": 1, "at": now, "posts": items}, ensure_ascii=False).encode("utf-8")
+        mobile = mobile_feed(now)
+    sig = hashlib.sha1(json.dumps([items, mobile], ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+    if not force and sig == _mobile_hash["v"] and now - feed_info["lastPublish"] < 6 * 3600:
+        return
+    files = {"feed.json": json.dumps({"version": 1, "at": now, "posts": items}, ensure_ascii=False).encode("utf-8"),
+             "docs/feed.json": json.dumps({"version": 1, "at": now, "syncRepo": config.get("syncRepo") or "", "sources": {
+                 **{k: list(v) for k, v in sources.WEB_SOURCES.items()}, **{s["id"]: [s["name"], s["group"]] for s in sources.SOURCES}},
+                 "posts": mobile}, ensure_ascii=False).encode("utf-8"),
+             "docs/.nojekyll": b""}
+    for fn in os.listdir(MOBILE):
+        if not fn.startswith("."):
+            with open(os.path.join(MOBILE, fn), "rb") as f:
+                files["docs/" + fn] = f.read()
     try:
-        st, _ = gh("GET", "/git/ref/heads/feed")
-        if st == 404:
-            st, main = gh("GET", "/git/ref/heads/main")
-            if st != 200:
-                raise RuntimeError(f"저장소를 읽지 못했습니다({st}) — 토큰 권한을 확인해 주세요")
-            gh("POST", "/git/refs", {"ref": "refs/heads/feed", "sha": main["object"]["sha"]})
-        elif st != 200:
-            raise RuntimeError(f"저장소에 접근하지 못했습니다({st}) — 토큰을 확인해 주세요")
-        st, cur = gh("GET", "/contents/feed.json?ref=feed")
-        body = {"message": f"공유 목록 {len(items)}건", "branch": "feed", "content": base64.b64encode(data).decode()}
-        if st == 200:
-            body["sha"] = cur.get("sha")
-        st, _ = gh("PUT", "/contents/feed.json", body)
-        if st not in (200, 201):
-            raise RuntimeError(f"올리지 못했습니다({st}) — 토큰에 Contents 쓰기 권한이 있는지 확인해 주세요")
-        feed_info.update(role="producer", lastPublish=now, count=len(items), error="")
+        commit_files("feed", files, f"공유 목록 SNS {len(items)}건 · 휴대폰 {len(mobile)}건")
+        _mobile_hash["v"] = sig
+        feed_info.update(role="producer", lastPublish=now, count=len(items), mobileCount=len(mobile), error="")
     except Exception as e:  # noqa: BLE001
         feed_info.update(role="producer", error=str(e)[:200])
+
+
+# ── 찜·메모 동기화(휴대폰 ↔ 이 컴퓨터) ─────────────────────────
+# 비공개 저장소(syncRepo)의 saved.json 하나를 휴대폰 앱과 이 컴퓨터가 같이 고친다. 글마다 마지막으로 고친 쪽(updatedAt)이 이긴다.
+
+def tomb_add(pid):
+    st = read_json(SYNC_STATE, {})
+    st.setdefault("tomb", {})[pid] = time.time()
+    write_json(SYNC_STATE, st)
+
+
+def merge_saved(local, ltomb, remote):
+    """반환: (합친 찜, 합친 풀림 기록). 같은 글이면 더 늦게 고친 쪽을 쓴다."""
+    ritems, rtomb = remote.get("items") or {}, remote.get("deleted") or {}
+    out, tomb = {}, {}
+    ts = lambda e: e.get("updatedAt") or e.get("savedAt") or 0  # noqa: E731
+    for pid in set(local) | set(ltomb) | set(ritems) | set(rtomb):
+        cands = []
+        if pid in local:
+            cands.append((ts(local[pid]), local[pid]))
+        if pid in ritems:
+            cands.append((ts(ritems[pid]), ritems[pid]))
+        dead = max(ltomb.get(pid, 0), rtomb.get(pid, 0))
+        best = max(cands, key=lambda c: c[0]) if cands else None
+        if best and best[0] > dead:
+            e = dict(best[1])
+            if (e.get("post") or {}).get("mobile") and pid in posts:  # 휴대폰에서 찜한 글 → 이 컴퓨터의 전체 정보로
+                e["post"] = {k: v for k, v in posts[pid].items() if k not in ("body", "bodySnippet")}
+            if not e.get("post"):
+                po = next((c[1]["post"] for c in cands if c[1].get("post")), None)
+                if po:
+                    e["post"] = po
+            if not e.get("analysis"):
+                an = next((c[1]["analysis"] for c in cands if c[1].get("analysis")), None)
+                if an:
+                    e["analysis"] = an
+            out[pid] = e
+        elif dead > time.time() - 60 * 86400:
+            tomb[pid] = dead
+    return out, tomb
+
+
+def sync_saved():
+    import base64
+    repo = config.get("syncRepo")
+    if not (config.get("feedToken") and repo):
+        return
+    try:
+        for _ in range(3):
+            st, cur = gh("GET", "/contents/saved.json", repo=repo)
+            if st == 404:
+                rst, _r = gh("GET", "", repo=repo)
+                if rst != 200:
+                    raise RuntimeError(f"동기화 저장소 {repo}에 접근하지 못했습니다({rst}) — 비공개 저장소를 만들고 토큰에 추가해 주세요")
+                remote, sha = {}, None
+            elif st == 200:
+                remote, sha = json.loads(base64.b64decode(cur.get("content") or "") or b"{}"), cur.get("sha")
+            else:
+                raise RuntimeError(f"동기화 저장소를 읽지 못했습니다({st}) — 토큰을 확인해 주세요")
+            with lock:
+                ltomb = read_json(SYNC_STATE, {}).get("tomb", {})
+                merged, tomb = merge_saved(saved, ltomb, remote)
+                local_changed = json.dumps(merged, sort_keys=True) != json.dumps(saved, sort_keys=True)
+                if local_changed:
+                    saved.clear()
+                    saved.update(merged)
+                    save_saved()
+                if tomb != ltomb:
+                    write_json(SYNC_STATE, dict(read_json(SYNC_STATE, {}), tomb=tomb))
+            if local_changed:
+                changed["at"] = time.time()
+            doc = {"version": 1, "items": merged, "deleted": tomb}
+            if doc["items"] != (remote.get("items") or {}) or doc["deleted"] != (remote.get("deleted") or {}):
+                doc["at"] = time.time()
+                body = {"message": f"찜 {len(merged)}건", "content": base64.b64encode(
+                    json.dumps(doc, ensure_ascii=False).encode("utf-8")).decode()}
+                if sha:
+                    body["sha"] = sha
+                st, _r = gh("PUT", "/contents/saved.json", body, repo=repo)
+                if st in (409, 422):  # 그 사이 휴대폰이 고쳤다 → 다시 읽어서 합친다
+                    continue
+                if st not in (200, 201):
+                    raise RuntimeError(f"동기화 저장소에 쓰지 못했습니다({st}) — 토큰에 이 저장소 Contents 쓰기 권한이 있는지 확인해 주세요")
+            break
+        sync_info.update(lastSync=time.time(), error="", count=len(saved))
+    except Exception as e:  # noqa: BLE001
+        sync_info.update(error=str(e)[:200])
+
+
+def sync_watch():
+    """찜·메모가 바뀌면 곧바로, 아니면 3분마다 휴대폰 쪽 변경을 받아 온다."""
+    time.sleep(20)
+    while True:
+        sync_saved()
+        if sync_wake.wait(180):
+            sync_wake.clear()
+            time.sleep(3)  # 메모를 연달아 고칠 때 한 번에 올리게
 
 
 def consume_feed():
@@ -1178,7 +1464,7 @@ def feed_watch():
     while True:
         if config.get("feedToken"):
             feed_info["role"] = "producer"
-            if time.time() - feed_info["lastPublish"] > 3600:
+            if time.time() - feed_info["lastPublish"] > 1200:  # 휴대폰 목록: 바뀐 게 있으면 20분마다
                 publish_feed()
         else:
             consume_feed()
@@ -1228,6 +1514,8 @@ if __name__ == "__main__":
     threading.Thread(target=scheduler, args=(srv,), daemon=True).start()
     threading.Thread(target=update_watch, daemon=True).start()
     threading.Thread(target=feed_watch, daemon=True).start()
+    threading.Thread(target=sync_watch, daemon=True).start()
+    threading.Thread(target=lambda: (time.sleep(40), expand_threads(limit=150)), daemon=True).start()
     print(f"실화탐사대 아이템 레이더: http://127.0.0.1:{PORT}  (데이터: {DATA})", flush=True)
     try:
         srv.serve_forever()

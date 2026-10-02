@@ -1,0 +1,17 @@
+{
+  "name": "실화탐사대 아이템 레이더",
+  "short_name": "실화탐사대",
+  "description": "커뮤니티·SNS에서 <실화탐사대> 아이템이 될 만한 글을 모아 보고, 노트북과 찜·메모를 함께 씁니다.",
+  "lang": "ko",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#F4F4F2",
+  "theme_color": "#D7263D",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icon-maskable.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

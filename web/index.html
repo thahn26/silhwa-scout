@@ -165,6 +165,8 @@ select { border: 1px solid var(--line-2); border-radius: 8px; padding: 6px 8px; 
 
 /* 찜 */
 .savedrow { display: grid; grid-template-columns: 22px 54px minmax(0, 1fr) 280px; gap: 14px; align-items: start; }
+body.noscore .card { grid-template-columns: minmax(0, 1fr) auto; }
+body.noscore .savedrow { grid-template-columns: 22px minmax(0, 1fr) 280px; }
 .savedrow .memo textarea { min-height: 62px; font-size: 13px; }
 .statusSel { font-size: 12px; padding: 3px 6px; }
 .st-검토중 { color: var(--ink-2); } .st-취재후보 { color: var(--red); font-weight: 700; } .st-보류 { color: var(--amber); } .st-탈락 { color: var(--ink-3); text-decoration: line-through; }
@@ -195,6 +197,7 @@ select { border: 1px solid var(--line-2); border-radius: 8px; padding: 6px 8px; 
   .top { flex-wrap: wrap; }
   .status { display: none; }
   .savedrow { grid-template-columns: 22px 54px minmax(0, 1fr); }
+  body.noscore .savedrow { grid-template-columns: 22px minmax(0, 1fr); }
   .savedrow .memo { grid-column: 3; }
   .reports { grid-template-columns: 1fr; }
   .card { grid-template-columns: 48px minmax(0, 1fr); }
@@ -207,6 +210,7 @@ select { border: 1px solid var(--line-2); border-radius: 8px; padding: 6px 8px; 
   <div class="brand"><i class="dot"></i><div><b>실화탐사대</b><br><span>아이템 레이더 · 커뮤니티 화제글 → 아이템 후보</span></div></div>
   <nav class="tabs" id="tabs">
     <button data-tab="radar" class="on">레이더</button>
+    <button data-tab="blind">블라인드</button>
     <button data-tab="saved">찜한 아이템<span class="cnt" id="savedCnt"></span></button>
     <button data-tab="reports">보고서</button>
   </nav>

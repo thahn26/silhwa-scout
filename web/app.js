@@ -43,6 +43,7 @@ function toast(msg) {
 async function refresh() {
   S = await api("state");
   byId = new Map(S.posts.map((p) => [p.id, p]));
+  document.body.classList.toggle("noscore", !!S.noScore);
   for (const [id, s] of Object.entries(S.saved)) if (!byId.has(id) && s.post) byId.set(id, s.post);
   lastJobsSig = jobsSig(S.jobs, S.config.lastCrawl, lastChangedAt);
   render();
@@ -118,12 +119,13 @@ function filtered() {
   const q = UI.q.trim().toLowerCase();
   let list = S.posts.filter((p) => {
     const g = srcInfo(p.source).group;
-    if (UI.snsView) { if (!SNS.includes(p.source)) return false; }
+    if (UI.tab === "blind") { if (p.source !== "blind") return false; }
+    else if (UI.snsView) { if (!SNS.includes(p.source)) return false; }
     else if (UI.hideGroups.includes(g) || UI.hideSrc.includes(p.source)) return false;
     if (UI.range && now - Math.max(when(p), p.lastSeen || 0) > UI.range * 3600) return false;
     if (!UI.showExcluded && excludedWhy(p)) return false;
     if (UI.onlyFirst && !FIRST_HAND.includes(judge(p)?.writer)) return false;
-    if (eff(p) < UI.min) return false;
+    if (!S.noScore && eff(p) < UI.min) return false;  // 윈도우는 최소 점수 칸이 없다
     if (UI.cats.length) {
       const c = judge(p) ? judge(p).category : "미채점";
       if (!UI.cats.includes(c)) return false;
@@ -139,7 +141,8 @@ function filtered() {
     hot: (a, b) => reach(b) - reach(a) || (b.comments ?? 0) - (a.comments ?? 0),
     new: (a, b) => when(b) - when(a),
   };
-  list.sort(UI.snsView ? sorters.new : (sorters[UI.sort] || sorters.ai));
+  const sortKey = S.noScore && UI.sort === "pre" ? "ai" : UI.sort;
+  list.sort(UI.snsView && UI.tab !== "blind" ? sorters.new : (sorters[sortKey] || sorters.ai));
   return cluster(list);
 }
 
@@ -176,13 +179,14 @@ function cluster(list) {
 
 function render() {
   for (const b of document.querySelectorAll("#tabs button")) b.classList.toggle("on", b.dataset.tab === UI.tab);
-  $("#view-radar").hidden = UI.tab !== "radar";
+  const radar = UI.tab === "radar" || UI.tab === "blind";  // 블라인드 탭은 레이더 화면에서 블라인드 글만 보여 준다
+  $("#view-radar").hidden = !radar;
   $("#view-saved").hidden = UI.tab !== "saved";
   $("#view-reports").hidden = UI.tab !== "reports";
   const n = Object.keys(S.saved).length;
   $("#savedCnt").textContent = n ? n : "";
   renderTop();
-  if (UI.tab === "radar") { renderSide(); renderList(); }
+  if (radar) { renderSide(); renderList(); }
   if (UI.tab === "saved") renderSaved();
   if (UI.tab === "reports") renderReports();
 }
@@ -295,9 +299,9 @@ function renderSide() {
     <h4>기간</h4>
     <div class="seg" data-k="range">${[[6, "6시간"], [24, "24시간"], [72, "3일"], [168, "7일"]].map(([v, l]) => `<button data-v="${v}" class="${UI.range == v ? "on" : ""}">${l}</button>`).join("")}</div>
     <h4>정렬</h4>
-    <div class="seg" data-k="sort">${[["ai", "점수"], ["pre", "예비"], ["hot", "반응"], ["new", "최신"]].map(([v, l]) => `<button data-v="${v}" class="${UI.sort == v ? "on" : ""}">${l}</button>`).join("")}</div>
-    <h4>최소 점수 <span>${UI.min}</span></h4>
-    <input type="range" id="min" min="0" max="90" step="5" value="${UI.min}">
+    <div class="seg" data-k="sort">${(S.noScore ? [["ai", "추천순"], ["hot", "반응"], ["new", "최신"]] : [["ai", "점수"], ["pre", "예비"], ["hot", "반응"], ["new", "최신"]]).map(([v, l]) => `<button data-v="${v}" class="${UI.sort == v ? "on" : ""}">${l}</button>`).join("")}</div>
+    ${S.noScore ? "" : `<h4>최소 점수 <span>${UI.min}</span></h4>
+    <input type="range" id="min" min="0" max="90" step="5" value="${UI.min}">`}
     <label class="toggle"><input type="checkbox" id="onlyFirst" ${UI.onlyFirst ? "checked" : ""}> 피해자·가족이 쓴 글만</label>
     <label class="toggle"><input type="checkbox" id="hideFlags" ${UI.hideFlags ? "checked" : ""}> 연예·정치·유머·해외·광고 숨기기</label>
     <label class="toggle" title="뉴스를 퍼 온 글, 이미 구속·수사 중인 사건"><input type="checkbox" id="showExcluded" ${UI.showExcluded ? "checked" : ""}> 제외된 글도 보기 <span class="hint">(${excludedCount.toLocaleString()}건)</span></label>
@@ -323,6 +327,7 @@ function reactions(p) {
 }
 
 function scoreBox(p) {
+  if (S.noScore) return "";  // 윈도우: 점수 숫자 없이 순서로만 보여 준다(사용자 요청)
   if (p.ai && p.ai.v) return `<div class="score ${scoreClass(p)}" title="Claude AI 채점">${p.ai.score}<small>AI</small></div>`;
   if (p.rule) return `<div class="score ${scoreClass(p)} s-rule" title="Claude 없이 규칙(피해자 표현·사건 분류·반응)으로 매긴 자동 점수">${p.rule.score}<small>자동</small></div>`;
   if (p.ai) return `<div class="score ${scoreClass(p)}" title="예전 기준 AI 채점">${p.ai.score}<small>AI·구</small></div>`;
@@ -379,8 +384,8 @@ function renderList() {
     return;
   }
   el.innerHTML = `
-    ${UI.snsView ? `<div class="bar" style="background:var(--blue-soft)"><b style="flex:1">스레드·인스타그램 글만 최신순으로 보는 중 · ${list.length.toLocaleString()}건</b><button class="btn sm" id="snsExit">전체 보기로 돌아가기</button></div>` : ""}
-    <div class="listhead"><h2>${UI.snsView ? "스레드·인스타그램" : "아이템 후보"}</h2><span class="sub">${list.length.toLocaleString()}건 · 전체 ${S.posts.length.toLocaleString()}건 중 AI 채점 ${scored.toLocaleString()}건</span></div>
+    ${UI.snsView && UI.tab !== "blind" ? `<div class="bar" style="background:var(--blue-soft)"><b style="flex:1">스레드·인스타그램 글만 최신순으로 보는 중 · ${list.length.toLocaleString()}건</b><button class="btn sm" id="snsExit">전체 보기로 돌아가기</button></div>` : ""}
+    <div class="listhead"><h2>${UI.tab === "blind" ? "블라인드" : UI.snsView ? "스레드·인스타그램" : "아이템 후보"}</h2><span class="sub">${list.length.toLocaleString()}건 · 전체 ${S.posts.length.toLocaleString()}건 중 AI 채점 ${scored.toLocaleString()}건</span></div>
     ${list.length ? list.slice(0, UI.limit).map(card).join("") : `<div class="empty"><b>조건에 맞는 글이 없습니다</b>기간을 늘리거나 최소 점수·분류 필터를 풀어 보세요.</div>`}
     ${list.length > UI.limit ? `<div class="more"><button class="btn" id="moreBtn">더 보기 (${(list.length - UI.limit).toLocaleString()}건 남음)</button></div>` : ""}`;
 }
@@ -499,7 +504,7 @@ async function openDrawer(id) {
       </div>
     </header>
     <div class="body">
-      ${judge(p) ? `<div class="sect"><h5>${p.ai && p.ai.v ? "AI 1차 판단" : "자동 판단(Claude 없이)"} · ${judge(p).score}점</h5>${judgeLines(p).replace('class="ai"', 'class="ai" style="margin:0"')}</div>` : ""}
+      ${judge(p) ? `<div class="sect"><h5>${p.ai && p.ai.v ? "AI 1차 판단" : "자동 판단(Claude 없이)"}${S.noScore ? "" : ` · ${judge(p).score}점`}</h5>${judgeLines(p).replace('class="ai"', 'class="ai" style="margin:0"')}</div>` : ""}
       ${s ? `<div class="sect"><h5>취재 메모</h5><textarea data-memo="${id}" rows="4" placeholder="메모">${esc(s.memo)}</textarea>
         <div style="margin-top:6px"><select class="statusSel" data-status="${id}">${STATUSES.map((x) => `<option ${x === s.status ? "selected" : ""}>${x}</option>`).join("")}</select></div></div>` : ""}
       <div class="sect" id="anaSect" ${p.analysis || s?.analysis ? "" : "hidden"}><h5>AI 심층 분석</h5><div class="md" id="anaBox">${md((p.analysis || s?.analysis)?.text || "")}</div></div>
@@ -552,6 +557,17 @@ function openSettings() {
           </div>
           <div class="hint" style="margin-top:6px">${esc(feedStatus())}</div>
         </div>
+        ${S.platform === "mac" && S.mobileUrl ? `
+        <label class="k full">휴대폰 앱 <span class="hint">— 갤럭시에서 아래 주소를 열고 브라우저 메뉴의 '홈 화면에 추가'를 누르면 앱처럼 씁니다. 목록은 이 앱이 켜져 있을 때 20분마다 올라갑니다.</span></label>
+        <div class="full" style="display:flex;gap:16px;align-items:flex-start;flex-wrap:wrap">
+          <div id="mobileQr" style="background:#fff;padding:8px;border-radius:8px;line-height:0"></div>
+          <div style="flex:1;min-width:240px">
+            <div><a href="${esc(S.mobileUrl)}" target="_blank" rel="noopener" style="font-weight:700;color:var(--blue)">${esc(S.mobileUrl)}</a></div>
+            <div class="hint" style="margin-top:8px">찜·메모 동기화 저장소(비공개)</div>
+            <input id="setSyncRepo" value="${esc(c.syncRepo || "")}" style="width:100%;max-width:320px;padding:6px 9px;border:1px solid var(--line-2);border-radius:8px;background:var(--surface)">
+            <div class="hint" style="margin-top:6px">${esc(syncStatus())}</div>
+          </div>
+        </div>` : ""}
         <label class="k full">수집할 커뮤니티</label>
         <div class="full srcgrid">${S.sources.map((s) => `<label class="toggle"><input type="checkbox" data-en="${s.id}" ${dis.has(s.id) ? "" : "checked"}>${esc(s.name)}</label>`).join("")}</div>
       </div>
@@ -560,6 +576,7 @@ function openSettings() {
         <button class="btn" id="cancelSet">취소</button><button class="btn primary" id="saveSet">저장</button>
       </div>
     </div></div>`;
+  drawQr();
 }
 
 function openClaudeHelp() {
@@ -580,10 +597,31 @@ function openClaudeHelp() {
     </div></div>`;
 }
 
+function syncStatus() {
+  const y = S.sync || {};
+  if (!S.config.feedTokenSet) return "위 GitHub 토큰을 넣으면 휴대폰과 찜·메모를 주고받습니다.";
+  if (y.error) return "동기화 오류: " + y.error;
+  return y.lastSync ? `휴대폰과 연동됨 — 마지막 동기화 ${ago(y.lastSync)} · 찜 ${y.count}건` : "곧 동기화합니다";
+}
+
+function drawQr() {
+  const el = $("#mobileQr");
+  if (!el || !S.mobileUrl) return;
+  const draw = () => {
+    const qr = window.qrcode(0, "M"); qr.addData(S.mobileUrl); qr.make();
+    el.innerHTML = qr.createSvgTag({ cellSize: 4, margin: 0 });
+  };
+  if (window.qrcode) return draw();
+  const sc = document.createElement("script");
+  sc.src = "https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js";
+  sc.onload = draw;
+  document.head.appendChild(sc);
+}
+
 function feedStatus() {
   const f = S.feed || {};
   if (f.error) return "공유 오류: " + f.error;
-  if (f.role === "producer") return f.lastPublish ? `대표 컴퓨터 — 마지막으로 올림 ${ago(f.lastPublish)} · ${f.count}건` : "대표 컴퓨터 — 아직 올린 적 없음";
+  if (f.role === "producer") return f.lastPublish ? `대표 컴퓨터 — 마지막으로 올림 ${ago(f.lastPublish)} · SNS ${f.count}건${f.mobileCount ? ` · 휴대폰 목록 ${f.mobileCount}건` : ""}` : "대표 컴퓨터 — 아직 올린 적 없음";
   if (f.role === "consumer") return f.lastFetch ? `받는 컴퓨터 — 마지막으로 받음 ${ago(f.lastFetch)} · ${f.count}건` : "받는 컴퓨터 — 곧 받아 옵니다";
   return "";
 }
@@ -596,6 +634,8 @@ async function saveSettings() {
     disabled: [...document.querySelectorAll("[data-en]")].filter((x) => !x.checked).map((x) => x.dataset.en),
   };
   if (tok) body.feedToken = tok;
+  const sr = $("#setSyncRepo")?.value.trim();
+  if (sr && sr !== S.config.syncRepo) body.syncRepo = sr;
   S.config = await api("settings", body);
   $("#modalRoot").innerHTML = "";
   toast("설정을 저장했습니다");

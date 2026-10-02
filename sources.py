@@ -5,6 +5,8 @@
 숫자를 모르면 None. ts는 알아낼 수 있을 때만 epoch 초.
 사이트 구조가 바뀌면 해당 parse_* 함수만 고치면 된다.
 """
+import html as html_lib
+import json
 import os
 import re
 import ssl
@@ -406,7 +408,7 @@ THREADS_HEADERS = {"Sec-Fetch-Dest": "document", "Sec-Fetch-Mode": "navigate", "
                    "Upgrade-Insecure-Requests": "1", "Referer": ""}
 # 피해자가 직접 쓸 법한 표현은 매번, 주제어는 시간마다 3개씩 돌아가며 검색한다
 THREADS_CORE = ["도와주세요", "공론화", "억울합니다", "사기 피해", "실종", "피해자입니다", "널리 알려주세요", "제보합니다"]
-THREADS_TOPICS = ["층간소음", "학교폭력", "갑질", "스토킹", "보이스피싱", "전세사기", "동물학대", "요양원", "의료사고",
+THREADS_TOPICS = ["저희 아이", "피해아동", "아동 성범죄", "층간소음", "학교폭력", "갑질", "스토킹", "보이스피싱", "전세사기", "동물학대", "요양원", "의료사고",
                   "폭행 당했", "먹튀", "경찰 신고", "블랙박스", "이웃 갈등", "어린이집"]
 THREADS_DAYS = 14  # 이보다 오래된 글은 뺀다
 
@@ -458,6 +460,55 @@ def parse_threads(html, base):
     return out
 
 
+def threads_thread(url):
+    """스레드 글 하나의 페이지(로그인 없이)를 읽어, 같은 글쓴이가 이어 쓴 글타래 전체를 돌려준다.
+    검색에는 타래 중간 글(댓글처럼 이어 쓴 글)이 걸리기도 해서, 반응이 큰 첫 글과 전체 내용을 찾는 데 쓴다.
+    반환: {"head": item 또는 None, "text": 글쓴이가 쓴 타래 전체(순서대로)}"""
+    import json
+    m = re.search(r"/@([^/]+)/post/([^/?#]+)", url)
+    if not m:
+        return None
+    user, code = m.group(1), m.group(2)
+    html = fetch(f"https://www.threads.com/@{user}/post/{code}", extra_headers=THREADS_HEADERS)
+    found = {}
+
+    def walk(o):
+        if isinstance(o, dict):
+            if "code" in o and "caption" in o and isinstance(o.get("user"), dict):
+                found.setdefault(o["code"], o)
+            for v in o.values():
+                walk(v)
+        elif isinstance(o, list):
+            for v in o:
+                walk(v)
+    for blob in re.findall(r'<script type="application/json"[^>]*>(.*?)</script>', html, re.S):
+        if '"caption"' in blob and '"code":"' in blob:
+            try:
+                walk(json.loads(blob))
+            except ValueError:
+                pass
+    mine = sorted((p for p in found.values() if (p.get("user") or {}).get("username") == user and p.get("taken_at")),
+                  key=lambda p: p["taken_at"])
+    if not mine:
+        return None
+    me = found.get(code)
+    if me:  # 이 글보다 한참 전(하루 넘게) 쓴 다른 타래 글은 빼고, 이 글과 같은 타래로 보이는 것만
+        mine = [p for p in mine if abs(p["taken_at"] - me["taken_at"]) < 86400]
+    head = mine[0]
+    text = "\n\n".join(((p.get("caption") or {}).get("text") or "").strip() for p in mine).strip()
+    lines = [ln.strip() for ln in ((head.get("caption") or {}).get("text") or "").splitlines() if ln.strip()]
+    lines = [ln for ln in lines if not re.fullmatch(r"(#\S+\s*)+", ln)] or lines  # 해시태그만 있는 줄은 제목에서 뺀다
+    first = lines[0] if lines else text
+    if len(first) < 20 and len(lines) > 1:
+        first = first + " " + lines[1]
+    info = head.get("text_post_app_info") or {}
+    it = item("threads", first[:90], f"https://www.threads.com/@{user}/post/{head['code']}",
+              excerpt=text[:200], body=text[:3000], bodySnippet=text[:800],
+              likes=head.get("like_count"), comments=info.get("direct_reply_count"), ts=float(head["taken_at"]),
+              timeText=time.strftime("%Y-%m-%d %H:%M", time.localtime(head["taken_at"])), category="@" + user)
+    return {"head": it, "text": text, "isHead": head["code"] == code}
+
+
 # 네이트판 카테고리(많이 본 톡). 목록 제목이 잘려 나오므로 titleCut 표시 → 본문을 읽을 때 원래 제목으로 바꾼다.
 PANN_CATS = {"c20013": "나 억울해요", "c20017": "개념 상실한 사람들", "c20012": "세상에 이런일이", "c20025": "결혼/시집/친정",
              "c20023": "남편 VS 아내", "c20019": "회사생활", "c20020": "알바 경험담", "c20001": "사는얘기"}
@@ -497,6 +548,18 @@ def cafe_urls():
             + urllib.parse.quote(q) for q in qs]
 
 
+def navercafe_urls():
+    return cafe_urls() + [u for c in CAFE_BOARDS for u in cafe_board_urls(c)]
+
+
+def parse_navercafe_any(text, base):
+    """네이버 카페: 검색 결과 페이지와, 직접 읽는 카페 게시판(글목록 API)을 같이 처리한다."""
+    if "apis.naver.com/cafe-web" in base:
+        cid = int(urllib.parse.parse_qs(urllib.parse.urlparse(base).query)["search.clubid"][0])
+        return parse_cafe_board(next(c for c in CAFE_BOARDS if c[0] == cid), "navercafe")(text, base)
+    return parse_navercafe(text, base)
+
+
 def parse_navercafe(html, base):
     out = []
     q = urllib.parse.parse_qs(urllib.parse.urlparse(base).query).get("query", [""])[0]
@@ -513,6 +576,37 @@ def parse_navercafe(html, base):
     return out
 
 
+# 네이버 카페 게시판 직접 읽기: 글 목록(제목·조회·댓글·좋아요)은 로그인 없이 열린다. 본문은 대부분 회원 전용이라 못 읽는다.
+# (카페 id, 주소 이름, [게시판 번호])
+SAJANG = (23611966, "jihosoccer123", [290, 713, 289, 293, 425], "아프니까 사장이다")  # 진상손님·사기피해·우리직원·성공실패·자유
+CAFE_BOARDS = [SAJANG]  # '네이버 카페' 수집에 함께 들어간다
+NOBODY_URLS = tuple(f"https://cafe.naver.com/{c[1]}/" for c in CAFE_BOARDS)  # 본문이 회원 전용인 카페
+CAFE_DAYS = 7
+
+
+def cafe_board_urls(cafe):
+    cid, _, menus, _ = cafe
+    return [f"https://apis.naver.com/cafe-web/cafe2/ArticleListV2dot1.json?search.clubid={cid}&search.menuid={m}"
+            f"&search.queryType=lastArticle&search.page=1&search.perPage=50" for m in menus]
+
+
+def parse_cafe_board(cafe, src):
+    def parse(text, base):
+        out = []
+        cut = time.time() - CAFE_DAYS * 86400
+        for a in (json.loads(text).get("message", {}).get("result", {}) or {}).get("articleList", []):
+            ts = (a.get("writeDateTimestamp") or 0) / 1000
+            title = html_lib.unescape(a.get("subject") or "").strip()
+            if ts < cut or a.get("blindArticle") or not title or "게시가 중단" in title:
+                continue
+            menu = cafe[3] + " · " + html_lib.unescape(a.get("menuName") or "").replace("•", "").strip()
+            out.append(item(src, title, f"https://cafe.naver.com/{cafe[1]}/{a['articleId']}",
+                            views=a.get("readCount"), likes=a.get("likeItCount"), comments=a.get("commentCount"),
+                            ts=ts, timeText=datetime.fromtimestamp(ts).strftime("%m-%d %H:%M"), category=menu))
+        return out
+    return parse
+
+
 # ── 수집 대상 목록 ──────────────────────────────────────────
 # group: 화면의 커뮤니티 묶음. urls 여러 개면 모두 읽고 주소로 중복을 뺀다.
 
@@ -521,8 +615,8 @@ SOURCES = [
      "urls": ["https://pann.nate.com/talk/ranking", "https://pann.nate.com/talk/ranking/d"], "parse": parse_pann},
     {"id": "pann_cat", "name": "네이트판 사연", "group": "사연·폭로",
      "urls": [f"https://pann.nate.com/talk/{c}?type=3" for c in PANN_CATS], "parse": parse_pann_cat},
-    {"id": "navercafe", "name": "네이버 카페", "group": "사연·폭로", "urls_fn": cafe_urls,
-     "urls": ["https://search.naver.com/search.naver"], "parse": parse_navercafe, "headers": THREADS_HEADERS, "delay": 1.0},
+    {"id": "navercafe", "name": "네이버 카페", "group": "사연·폭로", "urls_fn": navercafe_urls,
+     "urls": ["https://search.naver.com/search.naver"], "parse": parse_navercafe_any, "headers": THREADS_HEADERS, "delay": 1.0},
     {"id": "theqoo", "name": "더쿠", "group": "사연·폭로", "urls": ["https://theqoo.net/hot"], "parse": parse_theqoo},
     {"id": "cook82", "name": "82쿡", "group": "사연·폭로",
      "urls": ["https://www.82cook.com/entiz/enti.php?bn=15"], "parse": parse_82cook},
@@ -613,6 +707,9 @@ def fetch_title(html):
 
 
 def fetch_body(source, url, limit=6000, want_title=False):
+    if url.startswith(NOBODY_URLS):
+        text = "(카페 회원만 볼 수 있는 글이라 본문을 가져오지 못했습니다 — 원문 보기에서 네이버에 로그인해 확인하세요)"
+        return (None, text) if want_title else text
     html = fetch(url)
     if want_title:
         return fetch_title(html), fetch_body_from(source, html, limit)

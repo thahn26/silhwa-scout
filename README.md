@@ -54,3 +54,9 @@
 - 이 맥의 Claude 내장 브라우저에 작업용 부계정으로 스레드·인스타그램 로그인 → 예약 작업 `silhwa-sns-scout`(10·13·16·19·22시)가 최신 사연 글을 모아 `/api/import`로 넣는다.
 - 설정의 '윈도우와 공유'에 GitHub 토큰(silhwa-scout 저장소, Contents 읽기·쓰기)이 있으면 이 컴퓨터가 대표가 되어 로그인 수집 글을 `feed` 브랜치의 `feed.json`으로 올린다(10분마다 확인, 1시간마다 올림).
 - 토큰이 없는 PC(윈도우)는 1시간마다 `raw.githubusercontent.com/thahn26/silhwa-scout/feed/feed.json`을 받아 자동 필터로 판단한다.
+
+## 휴대폰 앱(갤럭시 홈 화면 앱)과 찜·메모 연동
+- 주소: `https://thahn26.github.io/silhwa-scout/` — GitHub Pages(설정 → Pages → 브랜치 `feed`, 폴더 `/docs`).
+- 맥 앱(토큰 있는 대표 컴퓨터)이 켜져 있으면 20분마다(바뀐 게 있을 때) `feed` 브랜치 `docs/`에 휴대폰 앱 파일(`web/mobile/`)과 목록 `docs/feed.json`(최근 3일, 제외 안 된 글, 점수순 최대 260건)을 한 커밋으로 올린다.
+- 찜·메모는 공개 저장소에 올리지 않고 비공개 저장소 `thahn26/silhwa-scout-sync`의 `saved.json` 하나로 주고받는다. 글마다 마지막으로 고친 쪽(updatedAt)이 이기고, 찜을 풀면 `deleted`에 기록(60일 보관). 맥은 찜이 바뀌면 곧바로, 아니면 3분마다 동기화(`server.py` sync_saved), 휴대폰은 앱을 열 때·90초마다·고칠 때.
+- 맥 토큰에는 silhwa-scout과 silhwa-scout-sync 두 저장소, 휴대폰 토큰에는 silhwa-scout-sync 하나만(Contents 읽기·쓰기).
