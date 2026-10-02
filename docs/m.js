@@ -49,7 +49,6 @@ function ago(t) {
   return `${d.getMonth() + 1}/${d.getDate()}`;
 }
 const fmt = (n) => (n == null ? null : n >= 10000 ? (n / 10000).toFixed(n >= 100000 ? 0 : 1) + "만" : Number(n).toLocaleString());
-const scoreClass = (s) => (s >= 80 ? "s-hot" : s >= 60 ? "s-good" : s >= 40 ? "s-mid" : "s-low");
 
 // ── 글 모양 맞추기 ──────────────────────────────────────────
 // 목록(feed)의 글은 그대로, 노트북에서 찜한 글(saved.post)은 노트북 형식이라 화면용으로 바꾼다.
@@ -253,7 +252,7 @@ function renderTools() {
   const st = sortOf(UI.tab);
   const hid = UI.hide.filter((s) => (FEED.posts || []).some((p) => p.source === s)).length;
   const row2 = UI.tab === "saved" ? "" : `<div class="row2">
-      <div class="seg"><button class="${st === "score" ? "on" : ""}" data-sort="score">점수순</button><button class="${st === "new" ? "on" : ""}" data-sort="new">최신순</button></div>
+      <div class="seg"><button class="${st === "score" ? "on" : ""}" data-sort="score">추천순</button><button class="${st === "new" ? "on" : ""}" data-sort="new">최신순</button></div>
       ${UI.tab === "blind" ? "" : `<button class="chip ${hid ? "on" : ""}" data-act="srcs">커뮤니티${hid ? ` · ${hid}곳 숨김` : " 전체"} ▾</button>`}
     </div>`;
   $("#tools").innerHTML = `<input class="search" id="q" type="search" placeholder="제목·내용·메모 검색" value="${esc(UI.q)}">${row2}<div class="chips">${chips}</div>`;
@@ -265,7 +264,6 @@ function card(p) {
   const isNew = prevFeedAt && p.firstSeen > prevFeedAt && UI.tab !== "saved";
   const color = GROUP_COLOR[p.group] || "var(--ink-2)";
   return `<article class="card" data-open="${esc(p.id)}">
-    <div class="score ${scoreClass(p.score)}">${p.score ?? "–"}<small>${esc(p.judge || "")}</small></div>
     <div class="body">
       <div class="meta"><span class="src" style="color:${color}">${esc(p.sourceName || p.source)}</span><span>${esc(ago(p.ts || p.firstSeen) || p.timeText)}</span>
         ${FIRST_HAND.includes(p.writer) ? `<span class="tag w">${esc(p.writer)}</span>` : ""}
@@ -328,7 +326,6 @@ function renderDetail(id, keepScroll) {
     <div class="meta"><span>${esc(ago(p.ts || p.firstSeen) || p.timeText)}</span>${react ? `<span>· ${react}</span>` : ""}</div>
     <div class="d-title">${esc(p.title)}</div>
     <div class="meta">
-      <span class="score ${scoreClass(p.score)}" style="width:auto;height:auto;padding:3px 9px;font-size:13px;border-radius:7px">${p.score ?? "–"}점 · ${esc(p.judge || "")}</span>
       ${FIRST_HAND.includes(p.writer) ? `<span class="tag w">${esc(p.writer)}</span>` : p.writer ? `<span class="tag">${esc(p.writer)}</span>` : ""}
       ${p.category && p.category !== "해당없음" ? `<span class="tag">${esc(p.category)}</span>` : ""}
     </div>
