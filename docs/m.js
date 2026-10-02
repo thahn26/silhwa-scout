@@ -20,7 +20,10 @@ const store = {
 let FEED = store.get("feed", { at: 0, posts: [], sources: {}, syncRepo: "" });
 let DOC = store.get("doc", { items: {}, deleted: {} });
 let TOKEN = store.get("token", "");
-const UI = Object.assign({ tab: "rec", q: "", cat: "", first: false, status: "" }, store.get("ui", {}));
+const UI = Object.assign({ tab: "rec", q: "", cat: "", first: false, status: "", hide: [], sorts: {} }, store.get("ui", {}));
+// 정렬: 탭마다 따로 기억한다(SNS는 처음엔 최신순, 나머지는 점수순)
+const sortOf = (tab) => UI.sorts[tab] || (tab === "sns" ? "new" : "score");
+const when = (p) => p.ts || p.firstSeen || 0;
 UI.limit = PAGE;
 let prevFeedAt = store.get("seenFeedAt", 0);
 const SYNC = { state: TOKEN ? "wait" : "off", at: 0, error: "", busy: false, again: false };
@@ -205,7 +208,8 @@ function list() {
     rows = (FEED.posts || []).filter(inTab);
     if (UI.cat) rows = rows.filter((p) => p.category === UI.cat);
     if (UI.first) rows = rows.filter((p) => FIRST_HAND.includes(p.writer));
-    rows = UI.tab === "sns" ? rows.slice().sort((a, b) => (b.ts || b.firstSeen) - (a.ts || a.firstSeen)) : rows;
+    if (UI.tab !== "blind" && UI.hide.length) rows = rows.filter((p) => !UI.hide.includes(p.source));
+    if (sortOf(UI.tab) === "new") rows = rows.slice().sort((a, b) => when(b) - when(a));
   }
   if (q) rows = rows.filter((p) => (p.title + " " + p.excerpt + " " + p.reason + " " + (DOC.items[p.id]?.memo || "")).toLowerCase().includes(q));
   return rows;
@@ -246,7 +250,13 @@ function renderTools() {
       [["", "전체"], ...cats.map((c) => [c, c])].map(([v, l]) => `<button class="chip ${UI.cat === v ? "on" : ""}" data-cat="${esc(v)}">${esc(l)}</button>`).join("");
   }
   const active = document.activeElement?.id === "q";
-  $("#tools").innerHTML = `<input class="search" id="q" type="search" placeholder="제목·내용·메모 검색" value="${esc(UI.q)}"><div class="chips">${chips}</div>`;
+  const st = sortOf(UI.tab);
+  const hid = UI.hide.filter((s) => (FEED.posts || []).some((p) => p.source === s)).length;
+  const row2 = UI.tab === "saved" ? "" : `<div class="row2">
+      <div class="seg"><button class="${st === "score" ? "on" : ""}" data-sort="score">점수순</button><button class="${st === "new" ? "on" : ""}" data-sort="new">최신순</button></div>
+      ${UI.tab === "blind" ? "" : `<button class="chip ${hid ? "on" : ""}" data-act="srcs">커뮤니티${hid ? ` · ${hid}곳 숨김` : " 전체"} ▾</button>`}
+    </div>`;
+  $("#tools").innerHTML = `<input class="search" id="q" type="search" placeholder="제목·내용·메모 검색" value="${esc(UI.q)}">${row2}<div class="chips">${chips}</div>`;
   if (active) { const q = $("#q"); q.focus(); q.setSelectionRange(q.value.length, q.value.length); }
 }
 
@@ -346,6 +356,26 @@ function flushMemo() {
 }
 
 let installEvt = null;
+// 커뮤니티 고르기: 지금 목록에 있는 곳만, 묶음별로
+function renderSrcs() {
+  const sh = $("#sheet");
+  const cnt = {};
+  for (const p of FEED.posts || []) if (!p.extra) cnt[p.source] = (cnt[p.source] || 0) + 1;
+  const groups = {};
+  for (const id of Object.keys(cnt)) {
+    const [name, group] = (FEED.sources || {})[id] || [id, "기타"];
+    (groups[group] = groups[group] || []).push({ id, name });
+  }
+  const order = ["사연·폭로", "남초·이슈", "사고·피해", "SNS", "뉴스·청원", "웹검색", "기타"];
+  sh.innerHTML = bar("커뮤니티 고르기") + `<div class="in">
+    <div class="actions" style="margin-top:0"><button class="btn" data-act="srcall">전체 선택</button><button class="btn" data-act="srcnone">전체 해제</button></div>
+    ${order.filter((g) => groups[g]).map((g) => `<div class="box"><h5>${esc(g)}</h5>
+      ${groups[g].sort((a, b) => cnt[b.id] - cnt[a.id]).map((s) => `<label class="srcrow"><input type="checkbox" data-src="${esc(s.id)}" ${UI.hide.includes(s.id) ? "" : "checked"}>
+        <span>${esc(s.name)}</span><span class="hint">${cnt[s.id]}건</span></label>`).join("")}</div>`).join("")}
+    <div class="actions"><button class="btn primary" data-act="close">적용</button></div>
+  </div>`;
+}
+
 function renderSettings() {
   const sh = $("#sheet");
   const standalone = matchMedia("(display-mode: standalone)").matches;
@@ -373,13 +403,14 @@ function renderSettings() {
 
 // ── 이벤트 ─────────────────────────────────────────────────
 document.addEventListener("click", async (ev) => {
-  const t = ev.target.closest("[data-tab],[data-cat],[data-first],[data-status],[data-star],[data-open],[data-act],[data-setstatus],#reload,#openSet");
+  const t = ev.target.closest("[data-tab],[data-cat],[data-first],[data-status],[data-sort],[data-star],[data-open],[data-act],[data-setstatus],#reload,#openSet");
   if (!t) return;
   if (t.id === "reload") { loadFeed(true); sync(); return; }
   if (t.id === "openSet") { openSheet("settings"); renderSettings(); return; }
   if (t.dataset.tab) { UI.tab = t.dataset.tab; UI.limit = PAGE; saveUI(); window.scrollTo(0, 0); render(); return; }
   if (t.dataset.cat !== undefined) { UI.cat = t.dataset.cat; UI.limit = PAGE; saveUI(); render(); return; }
   if (t.dataset.first !== undefined) { UI.first = !UI.first; UI.limit = PAGE; saveUI(); render(); return; }
+  if (t.dataset.sort) { UI.sorts[UI.tab] = t.dataset.sort; UI.limit = PAGE; saveUI(); window.scrollTo(0, 0); render(); return; }
   if (t.dataset.status !== undefined) { UI.status = t.dataset.status; saveUI(); render(); return; }
   if (t.dataset.star) {
     ev.stopPropagation();
@@ -396,6 +427,11 @@ document.addEventListener("click", async (ev) => {
   if (t.dataset.open) { openSheet("detail"); renderDetail(t.dataset.open); $("#sheet").scrollTop = 0; return; }
   const act = t.dataset.act;
   if (act === "more") { UI.limit += PAGE; renderList(); }
+  if (act === "srcs") { openSheet("srcs"); renderSrcs(); }
+  if (act === "srcall" || act === "srcnone") {
+    UI.hide = act === "srcall" ? [] : Object.keys(FEED.sources || {});
+    saveUI(); renderSrcs(); renderTools(); renderList();
+  }
   if (act === "close") closeSheet();
   if (act === "settings") { openSheet("settings"); renderSettings(); }
   if (act === "savetok") {
@@ -409,6 +445,12 @@ document.addEventListener("click", async (ev) => {
   }
   if (act === "cleartok") { TOKEN = ""; store.del("token"); SYNC.state = "off"; renderSettings(); render(); toast("토큰을 지웠어요"); }
   if (act === "install" && installEvt) { installEvt.prompt(); installEvt = null; }
+});
+document.addEventListener("change", (ev) => {
+  const id = ev.target.dataset?.src;
+  if (!id) return;
+  UI.hide = ev.target.checked ? UI.hide.filter((x) => x !== id) : [...new Set([...UI.hide, id])];
+  UI.limit = PAGE; saveUI(); renderTools(); renderList();
 });
 document.addEventListener("input", (ev) => {
   if (ev.target.id === "q") { UI.q = ev.target.value; UI.limit = PAGE; renderList(); }
