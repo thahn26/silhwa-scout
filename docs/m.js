@@ -202,7 +202,7 @@ function list() {
     rows.sort((a, b) => (b.e.updatedAt || b.e.savedAt || 0) - (a.e.updatedAt || a.e.savedAt || 0));
     rows = rows.map((r) => r.it);
   } else {
-    rows = (FEED.posts || []).filter((p) => (UI.tab === "sns" ? p.sns : true));
+    rows = (FEED.posts || []).filter(inTab);
     if (UI.cat) rows = rows.filter((p) => p.category === UI.cat);
     if (UI.first) rows = rows.filter((p) => FIRST_HAND.includes(p.writer));
     rows = UI.tab === "sns" ? rows.slice().sort((a, b) => (b.ts || b.firstSeen) - (a.ts || a.firstSeen)) : rows;
@@ -211,10 +211,13 @@ function list() {
   return rows;
 }
 
+// 탭별 목록: 추천은 블라인드 탭 전용 추가분(점수 낮은 블라인드 글)을 빼고 본다
+const inTab = (p) => (UI.tab === "sns" ? p.sns : UI.tab === "blind" ? p.source === "blind" : !p.extra);
+
 function renderTop() {
   const n = Object.keys(DOC.items).length;
   const sns = (FEED.posts || []).filter((p) => p.sns).length;
-  $("#tabs").innerHTML = [["rec", "추천", ""], ["sns", "스레드·인스타", sns ? `<span class="cnt">${sns}</span>` : ""], ["saved", "찜", n ? `<span class="cnt">${n}</span>` : ""]]
+  $("#tabs").innerHTML = [["rec", "추천", ""], ["sns", "SNS", sns ? `<span class="cnt">${sns}</span>` : ""], ["blind", "블라인드", ""], ["saved", "찜", n ? `<span class="cnt">${n}</span>` : ""]]
     .map(([k, l, c]) => `<button data-tab="${k}" class="${UI.tab === k ? "on" : ""}">${l}${c}</button>`).join("");
   const dot = SYNC.state === "ok" ? "ok" : SYNC.state === "bad" ? "bad" : "";
   const syncTxt = SYNC.state === "off" ? "찜은 이 폰에만" : SYNC.state === "busy" ? "동기화 중" : SYNC.state === "bad" ? "동기화 오류" : SYNC.state === "ok" ? "노트북과 연동됨" : "연동 준비 중";
@@ -235,7 +238,7 @@ function renderTools() {
   if (UI.tab === "saved") {
     chips = ["", ...STATUSES].map((s) => `<button class="chip ${UI.status === s ? "on" : ""}" data-status="${s}">${s || "전체"}</button>`).join("");
   } else {
-    const pool = (FEED.posts || []).filter((p) => (UI.tab === "sns" ? p.sns : true));
+    const pool = (FEED.posts || []).filter(inTab);
     const cats = [...new Set(pool.map((p) => p.category).filter((c) => c && c !== "해당없음"))];
     const cnt = (c) => pool.filter((p) => p.category === c).length;
     cats.sort((a, b) => cnt(b) - cnt(a));
